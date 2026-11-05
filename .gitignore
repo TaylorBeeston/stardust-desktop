@@ -1,0 +1,10 @@
+target/
+*.token
+**/*.token
+# portal restore tokens / per-machine state (never commit)
+.local/
+state/host-mirror/
+*.secret
+.env
+.env.*
+*.log

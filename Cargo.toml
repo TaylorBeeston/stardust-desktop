@@ -1,0 +1,6 @@
+[workspace]
+resolver = "2"
+members = ["crates/host-mirror", "crates/desk-toys"]
+
+[profile.release]
+debug = false

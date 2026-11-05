@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Bind to a hotkey (e.g. Super+Ctrl+R): classic recenter (whole Stardust scene, LOCAL re-origin)
+# AND re-sample the curved Flatland cylinder axis at your head (flatland-curve/anchor lives in
+# STAGE, which classic recenter does not move). Keeps adjust height/radius; yaw reset to 0.
+# Env: STARDUST_SHELL_BIN  CLI that does the classic recenter (default: stardust-shell on PATH;
+#      skipped if missing).
+set -u
+here="$(cd "$(dirname "$0")" && pwd)"
+sh_bin="${STARDUST_SHELL_BIN:-stardust-shell}"
+if command -v "$sh_bin" >/dev/null; then "$sh_bin" recenter "$@" || true
+else echo "($sh_bin not found; skipping classic recenter)" >&2; fi
+D="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/flatland-curve"
+if [ -f "$D/adjust" ]; then sed -i "s/^yaw_deg .*/yaw_deg 0.000/" "$D/adjust"; fi
+exec "$here/stardust-dual-mirror-recenter" --delay 0.3

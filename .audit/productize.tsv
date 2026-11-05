@@ -1,0 +1,16 @@
+ts	actor	decision	detail
+2026-11-04 21:19:03 PST	roadie	publish_branch	kept roadie/curve-bake-on-release on TaylorBeeston/flatland (already on fork @ c1ab0d4); added CYLINDER.md @ e0a86a2; did NOT rename to cylinder; did NOT push origin/StardustXR
+2026-11-04 21:19:03 PST	roadie	measure	fork/main..HEAD was 17 commits before docs; tip was already on fork/roadie/curve-bake-on-release; after docs push tip e0a86a2
+2026-11-04 21:19:03 PST	roadie	docs	CYLINDER.md covers FLATLAND_CURVE_*, DENSITY, CYLINDER_WIRE, EDGE_GRAB, REANCHOR_ON_RELEASE, key sink, shared flatland-curve files, recenter.req, bead handle, flat hit-test phase2 gap
+2026-11-04 21:19:03 PST	roadie	build	cargo check + cargo build --release with CARGO_TARGET_DIR=~/.cache/roadie-build/flatland-product; no just install / no live prefix clobber
+2026-11-04 21:19:03 PST	roadie	headset_gaps	no headset verify tonight; open: flat pointer hit-test on curved mesh (phase 2); no session restart
+2026-11-04 21:22:57 PST	#schema	rows below: ts phase decision why evidence result	file already had 4-col rows from a concurrent roadie flatland-docs agent; append-only so header kept	head of file	ok
+2026-11-04 21:22:57 PST	scaffold	copy host-mirror via git archive main (6d51685)	spec: main not WIP roadie/dmabuf-gpu-ring tip	git -C host-mirror log -1 main	crates/host-mirror (Cargo.lock dropped; root lock)
+2026-11-04 21:22:57 PST	scaffold	copy DeskToys src/data/tools/Cargo.toml; drop its justfile (prefix ../prefix/usr bootstrap-relative)	standalone install without bootstrap	DeskToys deps all crates.io/git, no path deps	crates/desk-toys
+2026-11-04 21:22:57 PST	risk	DeskToys standalone build	riskiest unknown	cargo build --release --workspace exit 0 (36.7s warm); clean CARGO_TARGET_DIR --locked exit 0 (30.2s)	pass
+2026-11-04 21:22:57 PST	packaging	models via project_local_resources (CARGO_MANIFEST_DIR) for dev; install to PREFIX/share + STARDUST_RES_PREFIXES	compile-time source path breaks if checkout moves	fusion client.rs macro	documented in README/justfile
+2026-11-04 21:22:57 PST	scripts	parametrize outputs (STARDUST_MIRROR_OUTPUTS), bins via PATH, panel shell @PREFIX@ template + panels.conf	remove FrenchFry paths and eDP-1/Meta-0 hardcoding	git grep /home/taylor -> none	examples/panels.conf keeps Taylor layout
+2026-11-04 21:22:57 PST	test	add parse_items edge-case test	spec item 3	cargo test: wrist_menu 4 passed; workspace 0 failed	pass
+2026-11-04 21:22:57 PST	verify	scripts/verify.sh (build,test,bash -n,--help,temp-prefix install,panels.conf parse w/ stub flatland)	repeatable headless check	exit 0 ALL OK	pass
+2026-11-04 21:22:57 PST	smoke	run toys with isolated XDG_RUNTIME_DIR	no live session touched	all 3 exit 101 NoServer (expected)	pass
+2026-11-04 21:22:57 PST	flatland	README points to TaylorBeeston/flatland roadie/curve-bake-on-release	fork tip moved to e0a86a2 (docs) by concurrent agent	git ls-remote	documented; side-prefix install

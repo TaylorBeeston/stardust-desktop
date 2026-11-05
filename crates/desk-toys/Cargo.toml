@@ -1,0 +1,33 @@
+[package]
+name = "desk-toys"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "spin-sign"
+path = "src/bin/spin_sign.rs"
+
+[[bin]]
+name = "newtons-cradle"
+path = "src/bin/newtons_cradle.rs"
+
+[[bin]]
+name = "wrist-menu"
+path = "src/bin/wrist_menu.rs"
+
+[dependencies]
+glam = { version = "0.33.7", features = ["mint"] }
+tokio = { version = "1.22.0", default-features = false, features = ["rt", "macros"] }
+serde = { version = "1.0.219", features = ["derive"] }
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+
+[dependencies.stardust-xr-fusion]
+version = "0.53.0-rc.1"
+
+[dependencies.stardust-xr-molecules]
+version = "0.53.0-rc.1"
+
+[dependencies.stardust-xr-asteroids]
+version = "0.53.0-rc.1"
+git = "https://github.com/StardustXR/asteroids.git"

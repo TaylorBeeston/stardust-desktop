@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Default panel shell for stardust-xr-wayland-service:  stardust-xr-wayland-service -p <this file>
+# `just install` writes this with @PREFIX@ replaced, because protostar may launch it with a
+# stripped environment. Override at runtime with STARDUST_PREFIX.
+PREFIX="${STARDUST_PREFIX:-@PREFIX@}"
+export PATH="$PREFIX/bin:${PATH:-/usr/bin:/bin}"
+export STARDUST_RES_PREFIXES="$PREFIX/share:${STARDUST_RES_PREFIXES:-/usr/share}"
+LOG="${XDG_RUNTIME_DIR:-/tmp}/stardust-panel-shell.log"
+CONF="${STARDUST_PANELS_CONF:-${XDG_CONFIG_HOME:-$HOME/.config}/stardust-desktop/panels.conf}"
+FLATLAND="${FLATLAND_BIN:-$PREFIX/bin/flatland}"
+[ -x "$FLATLAND" ] || FLATLAND="$(command -v flatland || echo flatland)"
+echo "==== $(date -Is) pid=$$ app_id=${SDXR_WL_APP_ID-} title=${SDXR_WL_TITLE-} flatland=$FLATLAND" >>"$LOG" 2>&1
+# Per-window settings from panels.conf. Each window gets its own Flatland process, so these are
+# per panel. Explicitly exported FLATLAND_* vars win. Line format (whitespace separated, # comments):
+#   app_id  density_px_per_m  fixed_res|-  curve_radius_m|-  curve_yaw_deg|-  wire(0/1)
+# Disable curving for all panels: touch ~/.local/state/host-mirror/flat
+HM_STATE="${XDG_STATE_HOME:-$HOME/.local/state}/host-mirror"
+if [ -f "$CONF" ]; then
+  while read -r app dens res rad yaw wire _; do
+    case "$app" in ""|\#*) continue ;; esac
+    [ "$app" = "${SDXR_WL_APP_ID-}" ] || continue
+    [ -n "${FLATLAND_DENSITY-}" ] || { [ "$dens" = - ] || export FLATLAND_DENSITY="$dens"; }
+    [ -n "${FLATLAND_FIXED_RES-}" ] || { [ "${res:--}" = - ] || export FLATLAND_FIXED_RES="$res"; }
+    if [ -z "${FLATLAND_CURVE_RADIUS-}" ] && [ ! -e "$HM_STATE/flat" ] && [ "${rad:--}" != - ]; then
+      export FLATLAND_CURVE_RADIUS="$rad" FLATLAND_CURVE_YAW_DEG="${yaw:-0}"
+      [ "${wire:-0}" = 1 ] && export FLATLAND_CYLINDER_WIRE="${FLATLAND_CYLINDER_WIRE-1}"
+    fi
+    break
+  done <"$CONF"
+fi
+if [ -n "${FLATLAND_CURVE_RADIUS-}" ] && [ -z "${FLATLAND_CURVE_ANCHOR-}" ]; then
+  export FLATLAND_CURVE_ANCHOR="$(cat "$HM_STATE/curve-anchor" 2>/dev/null || echo hmd)"
+fi
+export RUST_LOG="${RUST_LOG:-flatland=info,warn}"
+echo "FLATLAND_DENSITY=${FLATLAND_DENSITY-<default 3000>} CURVE r=${FLATLAND_CURVE_RADIUS-flat} yaw=${FLATLAND_CURVE_YAW_DEG-} anchor=${FLATLAND_CURVE_ANCHOR-}" >>"$LOG" 2>&1
+exec "$FLATLAND" -d "$@" >>"$LOG" 2>&1

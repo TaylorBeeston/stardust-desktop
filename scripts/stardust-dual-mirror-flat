@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+# Step 1 (flat) of "WayVR-style dual monitors in Stardust": two host-mirror windows,
+# one per monitor, shown as Flatland panels sized like WayVR (flat, not curved).
+#
+# Does NOT start Stardust. Start it first (stardust-xr-server + startup.sh), then run this.
+#
+# Sizes/curve: stardust_panel_shell reads ~/.config/stardust-desktop/panels.conf (see
+#   examples/panels.conf) keyed by app_id host-mirror-<label lowercased>.
+# Panels are not auto-tiled: grab and place them side by side yourself.
+#
+# First run: a GNOME portal dialog appears on the flat desktop for each mirror. Pick
+# the monitor matching each label, in order. Tokens go to ~/.local/state/host-mirror/<label>.token
+# so later runs skip the dialog (delete the token file to re-pick).
+#
+# Usage: stardust-dual-mirror-flat [--dry-run] [--only LABEL] [--recenter]
+#        --recenter: just re-place the running panels on your current gaze (= stardust-dual-mirror-recenter)
+# Placement: both panels share one head pose, sampled once the HMD is still (see stardust-dual-mirror-recenter).
+# Env:   STARDUST_MIRROR_OUTPUTS  space-separated labels, one mirror each (default "eDP-1 Meta-0";
+#        labels are just names: you pick the monitor in the portal dialog)
+#        HOST_MIRROR_BIN  host-mirror binary (default: host-mirror-dmabuf, else host-mirror, on PATH)
+#        STARDUST_WAYLAND_DISPLAY (default: socket of the running stardust-xr-wayland-service)
+#        HOST_MIRROR_NO_INPUT=1 to skip uinput mouse/keyboard injection.
+#        HOST_MIRROR_REPLACE=1 to kill and relaunch a running mirror (default: skip it).
+# Stop:  pkill -f 'host-mirror[^ ]* --label'
+set -euo pipefail
+RUN="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+_def="$(command -v host-mirror-dmabuf || command -v host-mirror || echo host-mirror)"
+BIN="${HOST_MIRROR_BIN:-$_def}"
+OUTPUTS="${STARDUST_MIRROR_OUTPUTS:-eDP-1 Meta-0}"
+DRY=0; ONLY=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run) DRY=1 ;;
+    --only) ONLY="$2"; shift ;;
+    --recenter) shift; exec "$(dirname "$0")/stardust-dual-mirror-recenter" "$@" ;;
+    -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
+    *) echo "unknown arg $1" >&2; exit 2 ;;
+  esac; shift
+done
+
+if ! pgrep -f 'stardust-xr-server' >/dev/null; then
+  echo "Stardust server is not running. Start Stardust first; this script will not." >&2
+  [ "$DRY" = 1 ] || exit 1
+fi
+
+sock="${STARDUST_WAYLAND_DISPLAY:-}"
+if [ -z "$sock" ]; then
+  for pid in $(pgrep -f '^stardust-xr-wayland-service ' | sort -rn); do
+    cand=$(tr '\0' '\n' </proc/$pid/cmdline | tail -n1)
+    if [ -S "$RUN/$cand" ]; then sock="$cand"; break; fi
+  done
+fi
+if [ -z "$sock" ] || [ ! -S "$RUN/$sock" ]; then
+  echo "No live Stardust wayland socket found. Set STARDUST_WAYLAND_DISPLAY=wayland-N." >&2
+  [ "$DRY" = 1 ] || exit 1; sock="${sock:-<none>}"
+fi
+echo "Stardust WAYLAND_DISPLAY=$sock"
+
+# wait up to $2 s for pids in $1 to exit, then SIGKILL and wait again
+wait_gone() {
+  local pids="$1" t="${2:-5}" i
+  [ -n "$pids" ] || return 0
+  for i in $(seq 1 $((t*10))); do
+    kill -0 $pids 2>/dev/null || return 0; sleep 0.1
+  done
+  echo "  still alive after ${t}s, SIGKILL: $pids" >&2
+  kill -9 $pids 2>/dev/null || true
+  for i in $(seq 1 20); do kill -0 $pids 2>/dev/null || return 0; sleep 0.1; done
+}
+panel_pids() {  # live flatland panels for app_id $1
+  local fp
+  for fp in $(pgrep -x flatland); do
+    tr '\0' '\n' </proc/$fp/environ 2>/dev/null | grep -qx "SDXR_WL_APP_ID=$1" && echo "$fp"
+  done; true
+}
+launch() {
+  local label="$1" log="$RUN/host-mirror-$1.log" app="host-mirror-${1,,}" pat lockfd
+  pat="host-mirror[^ ]* --label $label\$"
+  # single instance per label across concurrent runs (manual, autostart unit, stardust-vr-start)
+  mkdir -p "$RUN/host-mirror"
+  exec {lockfd}>"$RUN/host-mirror/$label.lock"
+  if ! flock -w 30 "$lockfd"; then echo "another launcher holds $label lock; skipping" >&2; return 1; fi
+  if [ "${HOST_MIRROR_REPLACE:-0}" = 1 ] && [ "$DRY" = 0 ]; then
+    local old; old=$(pgrep -f "$pat" | tr '\n' ' ')
+    if [ -n "$old" ]; then
+      echo "$(date '+%F %T') replace $label: TERM $old"
+      kill $old 2>/dev/null || true; wait_gone "$old" 5
+    fi
+    # its Flatland panel does not always exit with the client; reap it by app_id and WAIT
+    local fps; fps=$(panel_pids "$app" | tr '\n' ' ')
+    if [ -n "$fps" ]; then
+      echo "$(date '+%F %T') replace $label: reap panel(s) $fps"
+      kill $fps 2>/dev/null || true; wait_gone "$fps" 3
+    fi
+  fi
+  if pgrep -f "$pat" >/dev/null; then
+    echo "host-mirror $label already running (pid $(pgrep -f "$pat" | tr '\n' ' ')); skipping. HOST_MIRROR_REPLACE=1 to restart it."
+    exec {lockfd}>&-; return 0
+  fi
+  local stale; stale=$(panel_pids "$app" | tr '\n' ' ')
+  [ -z "$stale" ] || echo "WARN: $app panel(s) $stale alive with no client; HOST_MIRROR_REPLACE=1 reaps them" >&2
+  echo "+ WAYLAND_DISPLAY=$sock RUST_LOG=info $BIN --label $label  (log: $log)"
+  [ "$DRY" = 1 ] && { exec {lockfd}>&-; return 0; }
+  # keep previous run's log for post-mortems
+  [ -f "$log" ] && mv -f "$log" "$log.prev"
+  echo "== $(date '+%F %T %Z') launch $label bin=$BIN" >"$log"
+  # child must not inherit the lock fd (else the lock lives as long as the mirror)
+  WAYLAND_DISPLAY="$sock" RUST_LOG="${RUST_LOG:-info}" setsid "$BIN" --label "$label" >>"$log" 2>&1 {lockfd}>&- &
+  local cpid=$!
+  # Wait for the portal pick (dialog on first run) so the two dialogs don't overlap.
+  for _ in $(seq 1 120); do
+    grep -q "selected stream" "$log" 2>/dev/null && { grep "selected stream" "$log"; exec {lockfd}>&-; return 0; }
+    kill -0 $cpid 2>/dev/null || { echo "host-mirror $label exited:"; tail -5 "$log"; exec {lockfd}>&-; return 1; }
+    sleep 1
+  done
+  echo "still waiting on portal for $label; continuing"
+  exec {lockfd}>&-
+}
+
+# uinput mouse is absolute over the WHOLE desktop: tell each mirror the layout box (host-mirror
+# roadie/pointer-desktop-extent) so hovering a panel lands on its own monitor.
+if [ -z "${HOST_MIRROR_DESKTOP-}" ]; then
+  HOST_MIRROR_DESKTOP=$(python3 - 2>/dev/null <<'PY'
+from gi.repository import Gio
+b=Gio.bus_get_sync(Gio.BusType.SESSION)
+_,mons,logical,_=b.call_sync('org.gnome.Mutter.DisplayConfig','/org/gnome/Mutter/DisplayConfig','org.gnome.Mutter.DisplayConfig','GetCurrentState',None,None,0,-1,None).unpack()
+size={m[0][0]:(md[1],md[2]) for m in mons for md in m[1] if md[6].get('is-current')}
+r=[]
+for x,y,sc,tr,_,ms,_ in logical:
+    w,h=size[ms[0][0]]
+    if tr in (1,3,5,7): w,h=h,w
+    r.append((x,y,x+round(w/sc),y+round(h/sc)))
+x0,y0=min(a[0] for a in r),min(a[1] for a in r)
+print(f"{x0},{y0},{max(a[2] for a in r)-x0},{max(a[3] for a in r)-y0}")
+PY
+) || true
+  [ -n "$HOST_MIRROR_DESKTOP" ] && export HOST_MIRROR_DESKTOP && echo "pointer desktop box $HOST_MIRROR_DESKTOP"
+fi
+
+# new launch = new head anchor (first panel samples it, the second reuses it)
+[ "$DRY" = 1 ] || { mkdir -p "$RUN/flatland-curve"; touch "$RUN/flatland-curve/recenter.req"; }
+for o in $OUTPUTS; do
+  if [ -z "$ONLY" ] || [ "$ONLY" = "$o" ]; then launch "$o" || true; fi
+done
+exit 0
