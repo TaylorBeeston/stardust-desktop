@@ -34,3 +34,4 @@ ts	actor	decision	detail
 2026-11-04 21:51:56 PST	roadie	skip	group_grab_worker	worker drops layout socket before asteroids::run; needs persistent client task + GroupChanged re-pose	design deviation 8	skipped
 2026-11-04 21:51:56 PST	roadie	gap	headset_pointer_uv	verify cursor lands on seen texel, u direction vs GLB texcoord, concave face; touch_* + child surfaces unrouted; do not -p	design gaps 1,7,8	open
 2026-11-04 21:51:56 PST	roadie	skip	live_session	no restart, no -p swap, no bootstrap prefix change	-	ok
+2026-11-04 21:54:31 PST	roadie	fix	uv_convention	mesh TEXCOORD_0 now u=t (+X->u=1) matching mesh_local_point_to_uv/pointer; test mesh_texcoords_match_hit_test_uv fails on old 1-t; headset must still confirm not mirrored	bace1a7	ok
