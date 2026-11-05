@@ -1,8 +1,12 @@
 //! Bake a cylinder-slice GLB for `SurfaceModel` (ported from Flatland `curve.rs` lab).
 //!
 //! Mesh frame matches Flatland's measured convention: panel centre at the origin, edges
-//! wrapping toward -Z around an axis at (0, 0, -radius). UVs follow Flatland's panel.glb
-//! (+X -> u=0, +Y -> v=0). Double-sided. Pure std: runs headless.
+//! wrapping toward -Z around an axis at (0, 0, -radius). UV convention: **u increases toward
+//! +X** (−X edge u=0, +X edge u=1), +Y -> v=0 — the same convention as
+//! `CylinderSliceHitTest::mesh_local_point_to_uv` / pointer UV and Flatland's pointer input
+//! (`px = x + width/2`). Flatland's `curve.rs` bakes `1 - t` (inherited from panel.glb, whose
+//! flat mesh is re-oriented by a node rotation); we deliberately do not, so the rendered
+//! texel under a point is the texel the pointer reports. Double-sided. Pure std: runs headless.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -50,7 +54,7 @@ pub fn bake_curved_panel_glb_in(dir: &Path, width_m: f32, height_m: f32, radius_
         let (x, z) = (radius * s, -radius * (1.0 - c));
         for (y, v) in [(height / 2.0, 0.0f32), (-height / 2.0, 1.0)] {
             pos.extend([x, y, z]);
-            uv.extend([1.0 - t, v]);
+            uv.extend([t, v]);
             nrm.extend([s, 0.0, c]);
         }
     }
@@ -134,7 +138,37 @@ mod tests {
             let (x, z) = (rd(0), rd(2));
             assert!((x * x + (z + r) * (z + r) - r * r).abs() < 1e-4);
         }
-        // cache hit returns same path
+        // cache hit returns same path (checked below)
         assert_eq!(bake_curved_panel_glb_in(dir.path(), 0.641, 0.36, 0.70).unwrap(), p);
+    }
+
+    /// Mesh TEXCOORD_0 must equal hit-test UV at every vertex (±X edges included).
+    #[test]
+    fn mesh_texcoords_match_hit_test_uv() {
+        use crate::hit_test::CylinderSliceHitTest;
+        let dir = tempfile::tempdir().unwrap();
+        let (w, hgt, r) = (0.64f32, 0.36f32, 0.70f32);
+        let p = bake_curved_panel_glb_in(dir.path(), w, hgt, r).unwrap();
+        let bytes = std::fs::read(&p).unwrap();
+        let jlen = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let json: serde_json::Value = serde_json::from_slice(&bytes[20..20 + jlen]).unwrap();
+        let boff = 20 + jlen + 8;
+        let nv = json["accessors"][0]["count"].as_u64().unwrap() as usize;
+        let uv_off = json["bufferViews"][1]["byteOffset"].as_u64().unwrap() as usize;
+        let rd = |o: usize| f32::from_le_bytes(bytes[boff + o..][..4].try_into().unwrap());
+        let h = CylinderSliceHitTest { radius_m: r, yaw_rad: 0.0, width_m: w, height_m: hgt };
+        let (mut saw_pos_x, mut saw_neg_x) = (false, false);
+        for v in 0..nv {
+            let pos = [rd(v * 12), rd(v * 12 + 4), rd(v * 12 + 8)];
+            let mesh_uv = (rd(uv_off + v * 8), rd(uv_off + v * 8 + 4));
+            // nudge inside the u/v range so edge vertices are not rejected by the bounds check
+            let probe = [pos[0] * 0.999, pos[1] * 0.999, pos[2]];
+            let hit = h.mesh_local_point_to_uv(probe).unwrap_or_else(|| panic!("vertex {v} {pos:?} missed"));
+            assert!((hit.0 - mesh_uv.0).abs() < 1e-3, "u mismatch at {pos:?}: hit {hit:?} mesh {mesh_uv:?}");
+            assert!((hit.1 - mesh_uv.1).abs() < 2e-3, "v mismatch at {pos:?}: hit {hit:?} mesh {mesh_uv:?}");
+            saw_pos_x |= pos[0] > 0.2;
+            saw_neg_x |= pos[0] < -0.2;
+        }
+        assert!(saw_pos_x && saw_neg_x);
     }
 }

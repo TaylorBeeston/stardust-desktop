@@ -240,6 +240,11 @@ Implemented and unit-tested without a headset (`cargo test -p cylinder-shell`, *
 - **Hit-test** (`hit_test.rs`): ray ↔ cylinder in the cylinder-local frame (axis +Y, forward −Z,
   yaw + = right, belt at y = 0); front face only (ray from inside); u right, v down.
   `mesh_local_point_to_uv` maps mesh-local points onto the arc.
+- **U direction (single convention):** u increases toward +X (−X edge u=0, +X edge u=1), v=0 at +Y.
+  The baked GLB TEXCOORD_0 (`mesh.rs`, `uv = t`) and hit-test / pointer UV both use it; Flatland's
+  `curve.rs` bakes `1 − t` (inherited from panel.glb, which Flatland re-orients with a node
+  rotation), but Flatland's pointer input is `px = x + w/2` (+X → right), so we match the mesh to the
+  pointer. Pinned by `mesh::tests::mesh_texcoords_match_hit_test_uv`.
 - **Pointer UV** (`pointer_uv.rs`, `curved_pointer.rs`): **wired.** `CurvedPointerPlane` (Asteroids
   custom element, child of the panel Entity once a PanelItem is accepted) owns an `InputQueue`
   on a padded chord-AABB Field in mesh-local space. Pointer rays → `mesh_local_ray_hit`
@@ -294,7 +299,7 @@ headset; live session stays on Flatland `stardust_panel_shell`.
 
 Cannot close without a live WiVRn / Quest session (do **not** restart tonight):
 
-1. Curved pointer UV is wired but unverified: confirm the cursor lands on the texel the eye sees (also checks u direction vs the GLB's `+X → u=0` texcoords and which face reads concave).
+1. Curved pointer UV is wired but unverified: confirm the cursor lands on the texel the eye sees (u direction is now unified in code — `+X → u=1` in both mesh and hit-test — headset still has to confirm the image is not mirrored and which face reads concave).
 2. Multi-app drop-in: Ghostty + browser + host-mirror on one cylinder without app_id config.
 3. Group bead grab and radius drag under motion reprojection / WiVRn latency.
 4. Gap-ahead stability when panels resize (density / fixed-res changes).

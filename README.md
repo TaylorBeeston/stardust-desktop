@@ -109,6 +109,8 @@ pointer input** (`CurvedPointerPlane`: ray/hand → arc UV → `pointer_motion`/
 GLB bake, chord-AABB Field shape, XR preflight (fail-fast without live sockets), and the
 Asteroids accept path (`PanelItemAcceptor` → `PanelShell` → curved `SurfaceModel` + slot pose).
 `just install-cylinder-shell` installs the binaries.
+UV convention: u increases toward +X (left edge u=0) in both the baked mesh texcoords and the
+pointer hit-test (unlike Flatland's `curve.rs`, which bakes `1 − t`).
 **Not ready to `-p` yet:** headset must still validate concave mesh face vs placement and
 that pointer UV lands on the mesh the eye sees. The Field is still a chord-AABB Box (Fusion has
 no cylinder-slice SDF), so it only gates capture; the landing point comes from the arc. Touch
