@@ -34,7 +34,7 @@ pub fn segments_for(arc_rad: f32) -> usize {
 
 pub fn bake_curved_panel_glb_in(dir: &Path, width_m: f32, height_m: f32, radius_m: f32) -> io::Result<PathBuf> {
     let h = rendered_slice(width_m, height_m, radius_m);
-    write_slice_glb(dir, h.width_m, h.height_m, h.radius_m, "cyl-v2")
+    write_slice_glb(dir, h.width_m, h.height_m, h.radius_m, "cyl-v3")
 }
 
 /// Exactly the dimensions stored in the GLB, also used for overlays and fields.
@@ -47,7 +47,7 @@ pub fn rendered_slice(width_m: f32, height_m: f32, radius_m: f32) -> crate::hit_
 
 /// Small curved cursor patch; dimensions must not be rounded to panel-size centimetres.
 pub fn bake_cursor_glb(width: f32, height: f32, radius: f32) -> io::Result<PathBuf> {
-    write_slice_glb(&cache_dir(), width, height, radius, "cursor-v2")
+    write_slice_glb(&cache_dir(), width, height, radius, "cursor-v3")
 }
 
 fn write_slice_glb(dir: &Path, width: f32, height: f32, radius: f32, prefix: &str) -> io::Result<PathBuf> {
@@ -66,9 +66,12 @@ fn write_slice_glb(dir: &Path, width: f32, height: f32, radius: f32, prefix: &st
         let th = (t - 0.5) * arc;
         let (s, c) = th.sin_cos();
         for v in [0.0f32, 1.0] {
-            pos.extend(h.surface_point(1.0 - t, v, 0.0));
+            // Bevy gltf_backport imports [x,y,z] as [-x,y,-z]. Export in
+            // glTF space; texture U stays +X-right in the rendered panel.
+            let native = h.surface_point(t, v, 0.0);
+            pos.extend([-native[0], native[1], -native[2]]);
             uv.extend([1.0 - t, v]);
-            nrm.extend([-s, 0.0, c]);
+            nrm.extend([-s, 0.0, -c]);
         }
     }
     for i in 0..segs as u16 {
@@ -92,7 +95,7 @@ fn write_slice_glb(dir: &Path, width: f32, height: f32, radius: f32, prefix: &st
     let zmax = radius * (1.0 - (arc / 2.0).cos());
     let xmax = if arc / 2.0 >= std::f32::consts::FRAC_PI_2 { radius } else { radius * (arc / 2.0).sin() };
     let json = format!(
-        r#"{{"asset":{{"version":"2.0","generator":"cylinder-shell mesh.rs"}},"scene":0,"scenes":[{{"nodes":[0]}}],"nodes":[{{"mesh":0,"name":"Panel"}}],"meshes":[{{"name":"Panel","primitives":[{{"attributes":{{"POSITION":0,"TEXCOORD_0":1,"NORMAL":2}},"indices":3}}]}}],"accessors":[{{"bufferView":0,"componentType":5126,"count":{nv},"type":"VEC3","min":[{nx},{ny},0],"max":[{xmax},{hy},{nz}]}},{{"bufferView":1,"componentType":5126,"count":{nv},"type":"VEC2"}},{{"bufferView":2,"componentType":5126,"count":{nv},"type":"VEC3"}},{{"bufferView":3,"componentType":5123,"count":{ni},"type":"SCALAR"}}],"bufferViews":[{{"buffer":0,"byteOffset":0,"byteLength":{uv_off},"target":34962}},{{"buffer":0,"byteOffset":{uv_off},"byteLength":{uvl},"target":34962}},{{"buffer":0,"byteOffset":{n_off},"byteLength":{nl},"target":34962}},{{"buffer":0,"byteOffset":{i_off},"byteLength":{il},"target":34963}}],"buffers":[{{"byteLength":{bl}}}]}}"#,
+        r#"{{"asset":{{"version":"2.0","generator":"cylinder-shell mesh.rs"}},"scene":0,"scenes":[{{"nodes":[0]}}],"nodes":[{{"mesh":0,"name":"Panel"}}],"meshes":[{{"name":"Panel","primitives":[{{"attributes":{{"POSITION":0,"TEXCOORD_0":1,"NORMAL":2}},"indices":3}}]}}],"accessors":[{{"bufferView":0,"componentType":5126,"count":{nv},"type":"VEC3","min":[{nx},{ny},-{nz}],"max":[{xmax},{hy},0]}},{{"bufferView":1,"componentType":5126,"count":{nv},"type":"VEC2"}},{{"bufferView":2,"componentType":5126,"count":{nv},"type":"VEC3"}},{{"bufferView":3,"componentType":5123,"count":{ni},"type":"SCALAR"}}],"bufferViews":[{{"buffer":0,"byteOffset":0,"byteLength":{uv_off},"target":34962}},{{"buffer":0,"byteOffset":{uv_off},"byteLength":{uvl},"target":34962}},{{"buffer":0,"byteOffset":{n_off},"byteLength":{nl},"target":34962}},{{"buffer":0,"byteOffset":{i_off},"byteLength":{il},"target":34963}}],"buffers":[{{"byteLength":{bl}}}]}}"#,
         nx = -xmax,
         nz = zmax,
         ny = -height / 2.0,
@@ -148,7 +151,7 @@ mod tests {
         let boff = 20 + jlen + 8;
         for v in 0..nv {
             let rd = |k: usize| f32::from_le_bytes(bytes[boff + (v * 3 + k) * 4..][..4].try_into().unwrap());
-            let (x, z) = (rd(0), rd(2));
+            let (x, z) = (-rd(0), -rd(2)); // glTF -> server native
             assert!((x * x + (z - r) * (z - r) - r * r).abs() < 1e-4);
         }
         // cache quantizes inputs: nearby sizes reuse the same path
@@ -172,12 +175,12 @@ mod tests {
         let h = CylinderSliceHitTest { radius_m: r, yaw_rad: 0.0, width_m: w, height_m: hgt };
         let (mut saw_pos_x, mut saw_neg_x) = (false, false);
         for v in 0..nv {
-            let pos = [rd(v * 12), rd(v * 12 + 4), rd(v * 12 + 8)];
+            let pos = [-rd(v * 12), rd(v * 12 + 4), -rd(v * 12 + 8)];
             let mesh_uv = (rd(uv_off + v * 8), rd(uv_off + v * 8 + 4));
             // nudge inside the u/v range so edge vertices are not rejected by the bounds check
             let probe = [pos[0] * 0.999, pos[1] * 0.999, pos[2]];
             let hit = h.mesh_local_point_to_uv(probe).unwrap_or_else(|| panic!("vertex {v} {pos:?} missed"));
-            assert!((hit.0 - mesh_uv.0).abs() < 1e-3, "u mismatch at {pos:?}: hit {hit:?} mesh {mesh_uv:?}");
+            assert!((1.0 - hit.0 - mesh_uv.0).abs() < 1e-3, "u mismatch at {pos:?}: hit {hit:?} mesh {mesh_uv:?}");
             assert!((hit.1 - mesh_uv.1).abs() < 2e-3, "v mismatch at {pos:?}: hit {hit:?} mesh {mesh_uv:?}");
             saw_pos_x |= pos[0] > 0.2;
             saw_neg_x |= pos[0] < -0.2;
@@ -202,7 +205,7 @@ mod tests {
             let rot = h.surface_rotation(u);
             for vertex in 0..count {
                 let read = |component: usize| f32::from_le_bytes(bin[vertex * 12 + component * 4..vertex * 12 + component * 4 + 4].try_into().unwrap());
-                let p = centre + rot * glam::Vec3::new(read(0), read(1), read(2));
+                let p = centre + rot * glam::Vec3::new(-read(0), read(1), -read(2));
                 let rho = (p.x * p.x + (p.z - h.radius_m).powi(2)).sqrt();
                 assert!((rho - radius).abs() < 1e-5, "edge {u}, cursor vertex {vertex}: radius {rho}, expected {radius}");
             }
@@ -222,11 +225,31 @@ mod tests {
         let uv_offset = json["bufferViews"][1]["byteOffset"].as_u64().unwrap() as usize;
         let count = json["accessors"][0]["count"].as_u64().unwrap() as usize;
         for vertex in 0..count {
-            let p = glam::Vec3::new(read(vertex * 12), read(vertex * 12 + 4), read(vertex * 12 + 8));
+            let p = glam::Vec3::new(-read(vertex * 12), read(vertex * 12 + 4), -read(vertex * 12 + 8));
             let uv = (read(uv_offset + vertex * 8), read(uv_offset + vertex * 8 + 4));
-            let overlay = glam::Vec3::from(h.surface_point(uv.0, uv.1, crate::pointer_uv::OVERLAY_INSET_M));
+            let overlay = glam::Vec3::from(h.surface_point(1.0 - uv.0, uv.1, crate::pointer_uv::OVERLAY_INSET_M));
             let normal = glam::Vec3::new(-p.x, 0.0, h.radius_m - p.z).normalize();
             assert!((overlay - (p + normal * crate::pointer_uv::OVERLAY_INSET_M)).length() < 1e-5);
+        }
+    }
+
+    #[test]
+    fn imported_mesh_and_overlay_edges_bend_to_the_same_side() {
+        let dir = tempfile::tempdir().unwrap();
+        let h = rendered_slice(0.42666668, 0.24, 0.45);
+        let bytes = std::fs::read(bake_curved_panel_glb_in(dir.path(), h.width_m, h.height_m, h.radius_m).unwrap()).unwrap();
+        let json_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let json: serde_json::Value = serde_json::from_slice(&bytes[20..20 + json_len]).unwrap();
+        let bin = &bytes[28 + json_len..];
+        let count = json["accessors"][0]["count"].as_u64().unwrap() as usize;
+        for (vertex, u) in [(0, 1.0), (count - 2, 0.0)] {
+            let read = |c: usize| f32::from_le_bytes(bin[vertex*12+c*4..vertex*12+c*4+4].try_into().unwrap());
+            // Actual locked Bevy loader conversion, not a raw-file-space comparison.
+            let p = [-read(0), read(1), -read(2)];
+            let overlay = h.surface_point(1.0-u, 0.0, crate::pointer_uv::OVERLAY_INSET_M);
+            assert!(p[2] > 0.04 && overlay[2] > 0.04, "both edges must bend toward native +Z");
+            assert!((p[0] > 0.0) == (u > 0.5), "texture U must increase toward screen right");
+            assert!((p[2] - overlay[2]).abs() < 0.004);
         }
     }
 
