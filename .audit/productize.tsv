@@ -14,3 +14,6 @@ ts	actor	decision	detail
 2026-11-04 21:22:57 PST	verify	scripts/verify.sh (build,test,bash -n,--help,temp-prefix install,panels.conf parse w/ stub flatland)	repeatable headless check	exit 0 ALL OK	pass
 2026-11-04 21:22:57 PST	smoke	run toys with isolated XDG_RUNTIME_DIR	no live session touched	all 3 exit 101 NoServer (expected)	pass
 2026-11-04 21:22:57 PST	flatland	README points to TaylorBeeston/flatland roadie/curve-bake-on-release	fork tip moved to e0a86a2 (docs) by concurrent agent	git ls-remote	documented; side-prefix install
+2026-11-04 21:23:22 PST	publish	gh repo create public + push main da6ee18	README/scripts free of machine secrets (git grep clean)	git ls-remote origin main=da6ee18	https://github.com/TaylorBeeston/stardust-desktop
+2026-11-04 21:23:22 PST	skip	no host-mirror README note	host-mirror worktree is on WIP roadie/dmabuf-gpu-ring; switching would disturb it	git branch --show-current	skipped (optional)
+2026-11-04 21:26:34 PST	readme	replace Flatland-fork install section with Cylinder WM (planned panel shell)	parent steer t294u: cylinder = proper panel shell, not Flatland fork	grep fork/curve-bake in README -> none; verify.sh exit 0	pushed

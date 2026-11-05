@@ -16,7 +16,7 @@ The desk toys don't depend on host-mirror; they share a repo for organization on
 ## Requirements
 
 - Linux with a Wayland desktop that exposes the **ScreenCast portal** (tested: GNOME 50 / Mutter) and PipeWire.
-- A Stardust XR stack: `stardust-xr-server`, `stardust-xr-wayland-service` (needs `-p` panel-shell support), and **Flatland**. For curved panels use the Flatland fork below.
+- A Stardust XR stack: `stardust-xr-server`, `stardust-xr-wayland-service` (needs `-p` panel-shell support), and **Flatland**. Panels are shown flat for now (see Cylinder WM).
 - An OpenXR runtime (tested: WiVRn → Quest 3).
 - Rust (stable, edition 2024 for desk-toys), `just`, `python3` with PyGObject (only for the multi-monitor pointer box).
 - Write access to `/dev/uinput` for input injection (e.g. `input` group / udev rule), or run with `HOST_MIRROR_NO_INPUT=1`.
@@ -58,9 +58,9 @@ var you export yourself takes priority over panels.conf. It logs to `$XDG_RUNTIM
    to `~/.local/state/host-mirror/<label>.token`; delete it to pick again. **Don't commit or
    share token files.**
 3. Each mirror's Wayland app_id is `host-mirror-<label lowercased>`. Add one line per app_id to
-   `panels.conf` for its density (px/m), fixed resolution, and optional curve radius/yaw. See
+   `panels.conf` for its density (px/m) and fixed resolution (the curve columns are experimental, see Cylinder WM). See
    `examples/panels.conf` (a 2560×1600 laptop panel and a 3440×1440 ultrawide on a 0.70 m cylinder).
-4. Look straight ahead and run `stardust-dual-mirror-recenter` to re-place the curved panels.
+4. (Experimental curved panels only) look straight ahead and run `stardust-dual-mirror-recenter` to re-place the curved panels.
    `--yaw +10`, `--height -0.1`, `--radius 0.9`, `--show`, `--reset` nudge the whole set.
    `stardust-recenter-all` (good on a hotkey) also runs a classic scene recenter through
    `stardust-shell recenter` if it's installed (`STARDUST_SHELL_BIN`).
@@ -86,29 +86,22 @@ Lines starting with `#` and lines with no command are skipped. A missing or bad 
 to `0,-0.25,-0.45`. Which items are on is stored in `~/.local/state/wrist-menu/enabled`. Widgets
 that are already running get adopted.
 
-## Flatland cylinder (curved panels)
+## Cylinder WM (planned panel shell)
 
-Curved panels, the cylinder wire, group grab, and bake-on-release live in a **Flatland fork
-branch**, not in this repo:
+The curved, tiling-WM-style layout is planned as a **dedicated Stardust panel shell**: a
+`stardust-xr-wayland-service -p` panel shell that arranges *any* Wayland surface on a shared
+cylinder around you (tiling-WM feel, drop-in windows, group grab/recenter). It is not built yet,
+and it will land in this repo (e.g. `crates/cylinder-shell`) as its own crate.
 
-- repo: https://github.com/TaylorBeeston/flatland
-- branch: `roadie/curve-bake-on-release` (tip `e0a86a2`: CYLINDER.md docs on top of `c1ab0d4`, the bake-on-release code)
-- details: `CYLINDER.md` in that branch
+**Today** the panels are plain Flatland. `stardust_panel_shell` runs whatever `flatland` it
+finds (`FLATLAND_BIN` overrides) and passes per-window density and fixed resolution from
+`panels.conf`. Stock Flatland shows the mirrors **flat**.
 
-Install it into a **separate prefix** so it doesn't replace a working Flatland:
-
-```sh
-git clone -b roadie/curve-bake-on-release https://github.com/TaylorBeeston/flatland
-cd flatland
-just build-release
-just prefix="$HOME/.local/opt/flatland-curve" install   # bin/flatland + share/
-# then either set it per panel shell:
-#   FLATLAND_BIN=$HOME/.local/opt/flatland-curve/bin/flatland
-# or install with the same PREFIX you gave stardust-desktop, once you trust it.
-```
-
-Without the fork, stock Flatland still shows the mirrors flat. The `FLATLAND_CURVE_*` and
-`FLATLAND_DENSITY` vars are simply ignored.
+The `curve_r`/`curve_yaw` columns in `panels.conf` and the `FLATLAND_CURVE_*` env are left over
+from a **temporary experiment**: curve patches on a personal Flatland branch. They aren't the
+product, they aren't supported, and they will be replaced by the cylinder panel shell. Stock
+Flatland ignores them, and `stardust-dual-mirror-recenter` only does anything with those
+experimental panels.
 
 ## License
 
