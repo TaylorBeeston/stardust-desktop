@@ -3,31 +3,56 @@
 # cyl-headset-side-start. Never touches live Flatland, stardust-session, wivrn, grok-bot.
 set -euo pipefail
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}/cylinder-headset-side"
-stop_pidfile() {
+
+# Recursively TERM then KILL a pid and its current children (depth-first).
+# Needed because per-window wayland-service children (cylinder-shell workers) and
+# the launched app (ghostty) can outlive a polite kill of the parent compositor,
+# leaving dead MouseHandler/KeyboardHandler peers that confuse manifold/simular.
+kill_tree() {
+  local pid="$1" name="${2:-pid}"
+  [[ -n "${pid:-}" ]] || return 0
+  if ! kill -0 "$pid" 2>/dev/null; then
+    return 0
+  fi
+  local kids
+  kids=$(ps -o pid= --ppid "$pid" 2>/dev/null || true)
+  local k
+  for k in $kids; do
+    k="${k// /}"
+    [[ -n "$k" ]] || continue
+    kill_tree "$k" "child-of-$pid"
+  done
+  kill -TERM "$pid" 2>/dev/null || true
+  for _ in 1 2 3 4 5; do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.2
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
+  echo "stopped $name pid=$pid"
+}
+
+stop_pidfile_tree() {
   local f="$1" name="$2"
   if [[ -f "$f" ]]; then
     local pid
     pid=$(cat "$f" || true)
     if [[ -n "${pid:-}" ]] && kill -0 "$pid" 2>/dev/null; then
-      # polite TERM then KILL; never kill by port / pattern
-      kill -TERM "$pid" 2>/dev/null || true
-      for _ in 1 2 3 4 5; do
-        kill -0 "$pid" 2>/dev/null || break
-        sleep 0.2
-      done
-      if kill -0 "$pid" 2>/dev/null; then
-        kill -KILL "$pid" 2>/dev/null || true
-      fi
-      echo "stopped $name pid=$pid"
+      kill_tree "$pid" "$name"
     else
       echo "$name not running (stale pidfile)"
     fi
     rm -f "$f"
   fi
 }
-stop_pidfile "$STATE/side.pid" "side wayland-service"
-# Children (cylinder-shell workers) die with the compositor; do not pkill.
-stop_pidfile "$STATE/layout.pid" "cylinder-layout"
+
+# App first (ghostty), then compositor tree (per-window wayland-service + cylinder-shell),
+# then layout daemon. Order avoids racing a still-accepting acceptor.
+stop_pidfile_tree "$STATE/last-app.pid" "side app"
+stop_pidfile_tree "$STATE/side.pid" "side wayland-service"
+stop_pidfile_tree "$STATE/layout.pid" "cylinder-layout"
+
 # Drop our layout sock path file; sock itself goes away with daemon
 if [[ -f "$STATE/layout.sock.path" ]]; then
   rm -f "$(cat "$STATE/layout.sock.path")" 2>/dev/null || true
