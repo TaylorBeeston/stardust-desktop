@@ -15,7 +15,7 @@ use crate::outline::{curved_panel_border, FOCUS_OUTLINE_TIMEOUT};
 use crate::hit_test::CylinderSliceHitTest;
 use crate::layout_ipc::{apply_layout_event, LayoutEvent, LayoutRequestSender, LayoutSession};
 use crate::mesh::bake_curved_panel_glb;
-use crate::pointer_uv::uv_to_surface_px;
+use crate::pointer_uv::{cursor_mesh_transform, uv_to_surface_px};
 use crate::panel::{PanelWorker, SlotPlacement};
 use crate::PanelMetrics;
 use glam::{Quat, Vec3};
@@ -27,8 +27,7 @@ use stardust_xr_asteroids::{
     elements::Lines,
 };
 use stardust_xr_fusion::types::{Posef, Resource, Size2};
-use stardust_xr_molecules::lines::LineExt as _;
-use stardust_xr_panels::panel_item::{ScrollSource, SurfaceId, SurfaceUpdateTarget};
+use stardust_xr_panels::panel_item::{Geometry, ScrollSource, SurfaceId, SurfaceUpdateTarget};
 use stardust_xr_panels_asteroids::{
     panel_item_acceptor::PanelItemAcceptor,
     panel_shell::{PanelShell, PanelShellHandler},
@@ -99,6 +98,9 @@ pub struct CylinderShell {
     /// Last manifold keyboard/mouse event (for focus outline timeout).
     #[serde(skip)]
     last_input_at: Option<Instant>,
+    /// Client wl_pointer cursor geometry from PanelShell (Flatland `item.cursor`).
+    #[serde(skip)]
+    cursor: Option<Geometry>,
 }
 
 /// Apply a relative mouse delta to the cursor, clamped to the surface. Pure — unit-tested.
@@ -136,6 +138,7 @@ impl Default for CylinderShell {
             cursor_px: [0.0, 0.0],
             mod_tracker: ModTracker::new(),
             last_input_at: None,
+            cursor: None,
         }
     }
 }
@@ -207,8 +210,18 @@ impl Reify for CylinderShell {
             .build()
             .maybe_child(self.pointer_plane())
             .maybe_child(self.focus_outline())
+            .maybe_child(self.cursor_model())
             .maybe_child(self.panel_shell(context))
             .maybe_child(self.surface_model())
+    }
+}
+
+fn panel_resource() -> Resource {
+    // Same mesh Flatland uses for cursor SurfaceModel; texture comes from Cursor updates.
+    // Resolves via STARDUST_RES_PREFIXES (wrapper adds bootstrap share).
+    Resource::Namespaced {
+        namespace: "org.stardustxr.Flatland".into(),
+        path: "panel".into(),
     }
 }
 
@@ -255,20 +268,26 @@ impl CylinderShell {
     fn mouse_handler(&self) -> MouseHandler<Self> {
         let item = self.shell.as_ref().map(|s| s.item().clone());
         MouseHandler::<Self>::new()
-            .on_button_async({
-                let item = item.clone();
-                move |button, pressed, timestamp| {
-                    tracing::debug!(button, pressed, "mouse button");
-                    if let Some(item) = &item {
-                        let _ = item.pointer_button(SurfaceId::Toplevel, button, pressed, timestamp);
-                    }
-                }
+            .on_button(|state: &mut Self, button, pressed, timestamp| {
+                state.last_input_at = Some(Instant::now());
+                tracing::info!(button, pressed, cursor = ?state.cursor_px, "manifold mouse button");
+                let Some(shell) = &state.shell else { return };
+                let _ = shell.item().pointer_button(SurfaceId::Toplevel, button, pressed, timestamp);
             })
             .on_motion(|state: &mut Self, motion, timestamp| {
                 state.last_input_at = Some(Instant::now());
                 let Some(shell) = &state.shell else { return };
                 let d = [motion.x, -motion.y];
                 state.cursor_px = step_cursor(state.cursor_px, d, state.size_px);
+                // Throttled: prove manifold is still delivering deltas to THIS handler
+                // (host-mirror weirdness was beam targeting competing Fields).
+                {
+                    use std::sync::atomic::{AtomicU32, Ordering};
+                    static N: AtomicU32 = AtomicU32::new(0);
+                    if N.fetch_add(1, Ordering::Relaxed) % 60 == 0 {
+                        tracing::info!(cursor = ?state.cursor_px, delta = ?d, "manifold mouse motion");
+                    }
+                }
                 let _ = shell.item().pointer_motion(SurfaceId::Toplevel, Some(d.into()), state.cursor_px.into(), timestamp);
             })
             .on_scroll_discrete_async({
@@ -290,12 +309,25 @@ impl CylinderShell {
     /// Thin curved border while manifold keyboard/mouse is targeting this panel.
     fn focus_outline(&self) -> Option<impl Element<Self> + use<>> {
         let at = self.last_input_at?;
-        if at.elapsed() > FOCUS_OUTLINE_TIMEOUT {
+        let age = at.elapsed();
+        if age > FOCUS_OUTLINE_TIMEOUT {
             return None;
         }
-        let line = curved_panel_border(self.width_m, self.height_m, self.radius_m)
-            .thickness(0.0012)
-            .color(stardust_xr_fusion::types::rgba_linear!(0.55, 0.75, 1.0, 0.35));
+        {
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static N: AtomicU32 = AtomicU32::new(0);
+            if N.fetch_add(1, Ordering::Relaxed) % 120 == 0 {
+                tracing::info!(
+                    ?age,
+                    w = self.width_m,
+                    h = self.height_m,
+                    r = self.radius_m,
+                    "focus outline enabled"
+                );
+            }
+        }
+        // Style (thickness/color/toward-user offset) is baked in curved_panel_border.
+        let line = curved_panel_border(self.width_m, self.height_m, self.radius_m);
         Some(Lines::new([line]).build())
     }
 
@@ -330,6 +362,8 @@ impl CylinderShell {
             PanelShell::new(shell, move |state: &mut Self| {
                 tracing::info!("panel shell disconnected");
                 state.shell = None;
+                state.cursor = None;
+                state.last_input_at = None;
                 context.stop();
             })
             .on_toplevel_resolution_changed(|state, _, size| {
@@ -342,7 +376,33 @@ impl CylinderShell {
             .on_toplevel_title_changed(|state, _, title| {
                 state.worker.metrics.title = Some(title);
             })
+            .cursor_visuals_changed(|state: &mut Self, _, geometry| {
+                tracing::info!(has = geometry.is_some(), "cursor visuals changed");
+                state.cursor = geometry;
+            })
             .build(),
+        )
+    }
+
+    /// Flatland `cursor()`: draw the client's wl_pointer cursor surface at the
+    /// tracked manifold/XR cursor UV on the curved panel.
+    fn cursor_model(&self) -> Option<impl Element<Self> + use<>> {
+        let shell = self.shell.as_ref()?;
+        let geometry = self.cursor?;
+        let density = self.worker.metrics.density_px_per_m;
+        let (pos, scl) = cursor_mesh_transform(
+            &self.slice_hit_test(),
+            self.cursor_px,
+            self.size_px,
+            [geometry.origin.x as f32, geometry.origin.y as f32],
+            [geometry.size.x as f32, geometry.size.y as f32],
+            density,
+        );
+        Some(
+            SurfaceModel::new(shell, SurfaceUpdateTarget::Cursor, panel_resource(), "Panel")
+                .pos(pos)
+                .scl(scl)
+                .build(),
         )
     }
 

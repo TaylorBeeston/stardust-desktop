@@ -25,7 +25,7 @@ pub use layout_ipc::{
 };
 pub use mesh::{bake_curved_panel_glb, bake_curved_panel_glb_in};
 pub use mods::ModTracker;
-pub use pointer_uv::{mesh_local_point_hit, mesh_local_ray_hit, uv_to_mesh_local, uv_to_surface_px, SliceHit};
+pub use pointer_uv::{cursor_mesh_transform, mesh_local_point_hit, mesh_local_ray_hit, uv_to_mesh_local, uv_to_surface_px, SliceHit};
 pub use panel::{PanelWorker, SlotPlacement};
 pub use preflight::{
     parse_protected_panel_env, preflight_xr, provider_socket_path, server_socket_path, PreflightError,

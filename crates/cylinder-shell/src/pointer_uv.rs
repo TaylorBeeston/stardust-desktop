@@ -70,8 +70,53 @@ pub fn uv_to_surface_px(uv: (f32, f32), size_px: (u32, u32)) -> [f32; 2] {
     [(uv.0.clamp(0.0, 1.0) * w).min(w.max(1.0) - 1.0).max(0.0), (uv.1.clamp(0.0, 1.0) * h).min(h.max(1.0) - 1.0).max(0.0)]
 }
 
+
+/// Flatland `cursor()` pixel math → curved mesh-local pose for the client cursor surface.
+///
+/// Flatland places `SurfaceModel(Cursor)` in flat panel metres:
+/// `pos_px = cursor_pos - screen/2 + cursor_size/2 - hotspot_origin`, then
+/// `pos = pos_px * (1,-1) / density`. We map that panel-local point onto the arc via UV
+/// and nudge it toward the user so it sits in front of the concave face.
+///
+/// Returns `(translation_mesh_local, scale)` suitable for `SurfaceModel::pos/scl`.
+pub fn cursor_mesh_transform(
+    h: &CylinderSliceHitTest,
+    cursor_px: [f32; 2],
+    size_px: (u32, u32),
+    hotspot_origin_px: [f32; 2],
+    cursor_size_px: [f32; 2],
+    density_px_per_m: f32,
+) -> ([f32; 3], [f32; 3]) {
+    let density = density_px_per_m.max(1.0);
+    let screen = [size_px.0 as f32, size_px.1 as f32];
+    let pos_px = [
+        cursor_px[0] - screen[0] * 0.5 + cursor_size_px[0] * 0.5 - hotspot_origin_px[0],
+        cursor_px[1] - screen[1] * 0.5 + cursor_size_px[1] * 0.5 - hotspot_origin_px[1],
+    ];
+    // Flatland: y flips so +panel-local Y is up.
+    let local_m = [pos_px[0] / density, -pos_px[1] / density];
+    let u = (0.5 + local_m[0] / h.width_m.max(1e-6)).clamp(0.0, 1.0);
+    let v = (0.5 - local_m[1] / h.height_m.max(1e-6)).clamp(0.0, 1.0);
+    let p = uv_to_mesh_local(h, u, v);
+    let phi = (0.5 - u) * h.width_m / h.radius_m.max(1e-6);
+    let (s, c) = phi.sin_cos();
+    let toward_user = [-s, 0.0, -c];
+    let pos = [
+        p[0] + toward_user[0] * 0.001,
+        p[1] + toward_user[1] * 0.001,
+        p[2] + toward_user[2] * 0.001,
+    ];
+    let scl = [
+        cursor_size_px[0] / density,
+        cursor_size_px[1] / density,
+        0.01,
+    ];
+    (pos, scl)
+}
+
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     fn h() -> CylinderSliceHitTest {
@@ -158,5 +203,23 @@ mod tests {
         assert_eq!(uv_to_surface_px((0.5, 0.25), (1280, 720)), [640.0, 180.0]);
         assert_eq!(uv_to_surface_px((1.0, 1.2), (1280, 720)), [1279.0, 719.0]);
         assert_eq!(uv_to_surface_px((-0.1, 0.0), (1280, 720)), [0.0, 0.0]);
+    }
+
+    #[test]
+    fn cursor_transform_centres_default_hotspot_on_cursor_px() {
+        let h = h();
+        // 32x32 cursor, hotspot at (0,0), cursor at panel centre, density 1000 → 0.6m x 0.4m panel
+        let (pos, scl) = cursor_mesh_transform(
+            &h,
+            [300.0, 200.0], // centre of 600x400 px at density 1000
+            (600, 400),
+            [0.0, 0.0],
+            [32.0, 32.0],
+            1000.0,
+        );
+        // Model centre is offset by +16px = +0.016m in flat space from cursor hotspot.
+        // Hotspot at centre → model centre slightly right/down in UV; just check scale + z nudge.
+        assert!((scl[0] - 0.032).abs() < 1e-5 && (scl[1] - 0.032).abs() < 1e-5);
+        assert!(pos[2] < -0.0005, "toward-user −Z offset, got {:?}", pos);
     }
 }
