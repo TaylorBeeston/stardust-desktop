@@ -10,6 +10,8 @@
 
 use crate::curved_pointer::CurvedPointerPlane;
 use crate::field_shape::field_shape_for_slice;
+use crate::mods::ModTracker;
+use crate::outline::{curved_panel_border, FOCUS_OUTLINE_TIMEOUT};
 use crate::hit_test::CylinderSliceHitTest;
 use crate::layout_ipc::{apply_layout_event, LayoutEvent, LayoutRequestSender, LayoutSession};
 use crate::mesh::bake_curved_panel_glb;
@@ -22,9 +24,11 @@ use serde::{Deserialize, Serialize};
 use stardust_xr_asteroids::{
     ClientState, Context, CustomElement as _, Element, Entity, Migrate, Reify, Tasker, Transformable as _,
     components::{Derezzable, KeyboardHandler, MouseHandler, ScrollSource as AsteroidsScrollSource},
+    elements::Lines,
 };
 use stardust_xr_fusion::types::{Posef, Resource, Size2};
-use stardust_xr_panels::panel_item::{ModifierState, ScrollSource, SurfaceId, SurfaceUpdateTarget};
+use stardust_xr_molecules::lines::LineExt as _;
+use stardust_xr_panels::panel_item::{ScrollSource, SurfaceId, SurfaceUpdateTarget};
 use stardust_xr_panels_asteroids::{
     panel_item_acceptor::PanelItemAcceptor,
     panel_shell::{PanelShell, PanelShellHandler},
@@ -32,6 +36,7 @@ use stardust_xr_panels_asteroids::{
 };
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
 
 /// Values `main` stashes before `run` so `initial_state_update` can pose the panel.
 #[derive(Debug, Clone)]
@@ -88,6 +93,12 @@ pub struct CylinderShell {
     /// Last pointer position (surface px) — relative mouse motion (manifold) accumulates here.
     #[serde(skip)]
     cursor_px: [f32; 2],
+    /// Seat-local mods (see [`ModTracker`]) — do not forward manifold's global xkb mask.
+    #[serde(skip)]
+    mod_tracker: ModTracker,
+    /// Last manifold keyboard/mouse event (for focus outline timeout).
+    #[serde(skip)]
+    last_input_at: Option<Instant>,
 }
 
 /// Apply a relative mouse delta to the cursor, clamped to the surface. Pure — unit-tested.
@@ -123,6 +134,8 @@ impl Default for CylinderShell {
             }),
             layout_tx: None,
             cursor_px: [0.0, 0.0],
+            mod_tracker: ModTracker::new(),
+            last_input_at: None,
         }
     }
 }
@@ -193,6 +206,7 @@ impl Reify for CylinderShell {
             .component(self.shell.is_some().then(|| self.mouse_handler()))
             .build()
             .maybe_child(self.pointer_plane())
+            .maybe_child(self.focus_outline())
             .maybe_child(self.panel_shell(context))
             .maybe_child(self.surface_model())
     }
@@ -205,24 +219,36 @@ impl CylinderShell {
     }
 
     fn keyboard_handler(&self) -> KeyboardHandler<Self> {
-        let item = self.shell.as_ref().map(|s| s.item().clone());
-        KeyboardHandler::<Self>::new().on_key_async(move |key, timestamp| {
-            tracing::debug!(keycode = key.keycode, pressed = key.pressed, "key");
-            if let Some(item) = &item {
-                let _ = item.key(
-                    SurfaceId::Toplevel,
-                    key.keycode,
-                    key.pressed,
-                    ModifierState {
-                        depressed: key.modifiers.depressed,
-                        latched: key.modifiers.latched,
-                        locked: key.modifiers.locked,
-                        layout_group: key.modifiers.layout_group,
-                    },
-                    key.keymap,
-                    timestamp,
+        // Use on_key (frame-polled) so we can update seat-local ModTracker on &mut Self.
+        // Forwarding manifold's global depressed/locked mask verbatim made ghostty treat
+        // Shift as held whenever that mask was stale (Flatland host-mirror avoids this via key_sink).
+        KeyboardHandler::<Self>::new().on_key(move |state, key, timestamp| {
+            state.last_input_at = Some(Instant::now());
+            let mods = state
+                .mod_tracker
+                .apply(key.keycode, key.pressed, key.modifiers.layout_group);
+            if key.modifiers.depressed != mods.depressed || key.modifiers.locked != mods.locked {
+                tracing::info!(
+                    keycode = key.keycode,
+                    pressed = key.pressed,
+                    remote_dep = key.modifiers.depressed,
+                    local_dep = mods.depressed,
+                    remote_lock = key.modifiers.locked,
+                    local_lock = mods.locked,
+                    "key mods: seat-local overrides remote mask"
                 );
+            } else {
+                tracing::debug!(keycode = key.keycode, pressed = key.pressed, dep = mods.depressed, "key");
             }
+            let Some(shell) = &state.shell else { return };
+            let _ = shell.item().key(
+                SurfaceId::Toplevel,
+                key.keycode,
+                key.pressed,
+                mods,
+                key.keymap,
+                timestamp,
+            );
         })
     }
 
@@ -239,6 +265,7 @@ impl CylinderShell {
                 }
             })
             .on_motion(|state: &mut Self, motion, timestamp| {
+                state.last_input_at = Some(Instant::now());
                 let Some(shell) = &state.shell else { return };
                 let d = [motion.x, -motion.y];
                 state.cursor_px = step_cursor(state.cursor_px, d, state.size_px);
@@ -257,6 +284,19 @@ impl CylinderShell {
                     let _ = item.pointer_scroll_pixels(SurfaceId::Toplevel, [v.x, -v.y].into(), scroll_source(source), timestamp);
                 }
             })
+    }
+
+
+    /// Thin curved border while manifold keyboard/mouse is targeting this panel.
+    fn focus_outline(&self) -> Option<impl Element<Self> + use<>> {
+        let at = self.last_input_at?;
+        if at.elapsed() > FOCUS_OUTLINE_TIMEOUT {
+            return None;
+        }
+        let line = curved_panel_border(self.width_m, self.height_m, self.radius_m)
+            .thickness(0.0012)
+            .color(stardust_xr_fusion::types::rgba_linear!(0.55, 0.75, 1.0, 0.35));
+        Some(Lines::new([line]).build())
     }
 
     /// Curved pointer input; only once a PanelItem is accepted (nothing to send to before).

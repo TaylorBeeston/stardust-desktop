@@ -9,6 +9,8 @@ pub mod hit_test;
 pub mod layout_ipc;
 pub mod curved_pointer;
 pub mod mesh;
+pub mod mods;
+pub mod outline;
 pub mod panel;
 pub mod pointer_uv;
 pub mod preflight;
@@ -22,7 +24,8 @@ pub use layout_ipc::{
     LayoutRequest, LayoutRequestSender, LayoutSession, LayoutSessionClosed, SocketLayoutClient,
 };
 pub use mesh::{bake_curved_panel_glb, bake_curved_panel_glb_in};
-pub use pointer_uv::{mesh_local_point_hit, mesh_local_ray_hit, uv_to_surface_px, SliceHit};
+pub use mods::ModTracker;
+pub use pointer_uv::{mesh_local_point_hit, mesh_local_ray_hit, uv_to_mesh_local, uv_to_surface_px, SliceHit};
 pub use panel::{PanelWorker, SlotPlacement};
 pub use preflight::{
     parse_protected_panel_env, preflight_xr, provider_socket_path, server_socket_path, PreflightError,

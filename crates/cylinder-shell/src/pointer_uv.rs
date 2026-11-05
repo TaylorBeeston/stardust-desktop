@@ -55,6 +55,15 @@ pub fn mesh_local_point_hit(h: &CylinderSliceHitTest, p: [f32; 3]) -> Option<Sli
     Some(SliceHit { uv, distance: rho - h.radius_m })
 }
 
+
+/// Inverse of [`CylinderSliceHitTest::mesh_local_point_to_uv`]: UV → point on the arc.
+pub fn uv_to_mesh_local(h: &CylinderSliceHitTest, u: f32, v: f32) -> [f32; 3] {
+    let phi = (0.5 - u) * h.width_m / h.radius_m.max(1e-6);
+    let y = (0.5 - v) * h.height_m;
+    let (s, c) = phi.sin_cos();
+    [h.radius_m * s, y, -h.radius_m * (1.0 - c)]
+}
+
 /// UV → surface pixels, clamped to the surface so edge hits never go out of range.
 pub fn uv_to_surface_px(uv: (f32, f32), size_px: (u32, u32)) -> [f32; 2] {
     let (w, h) = (size_px.0 as f32, size_px.1 as f32);
@@ -132,6 +141,16 @@ mod tests {
         let q = [p[0] + 0.05 * th.sin(), p[1], p[2] + 0.05 * th.cos()];
         let hit = mesh_local_point_hit(&h, q).unwrap();
         assert!(close(hit.uv, (0.7, 0.75)) && (hit.distance - 0.05).abs() < 1e-5, "{hit:?}");
+    }
+
+    #[test]
+    fn uv_round_trips_with_mesh_local_point_to_uv() {
+        let h = h();
+        for (u, v) in [(0.5, 0.5), (0.1, 0.2), (0.9, 0.8)] {
+            let p = uv_to_mesh_local(&h, u, v);
+            let back = h.mesh_local_point_to_uv(p).unwrap();
+            assert!(close(back, (u, v)), "{back:?} vs {u},{v}");
+        }
     }
 
     #[test]
