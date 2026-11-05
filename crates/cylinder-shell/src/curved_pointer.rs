@@ -19,8 +19,9 @@ pub const BTN_LEFT: u32 = 0x110;
 pub const BTN_RIGHT: u32 = 0x111;
 pub const BTN_MIDDLE: u32 = 0x112;
 
-/// Hand / tip hover band in front of the surface (metres), mirroring Flatland.
-const HAND_HOVER: std::ops::Range<f32> = -0.02..0.2;
+/// Hand / tip hover band either side of the surface (metres), like Flatland's `|z| < 0.2`.
+/// Symmetric: viewed from the concave (inside) face the radial offset is negative.
+const HAND_HOVER: std::ops::Range<f32> = -0.2..0.2;
 /// Extra Field padding so rays grazing the arc edges still reach us.
 const FIELD_PAD_M: f32 = 0.02;
 
@@ -139,7 +140,12 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
             let q = inner.input.input();
             if !q.is_empty() && N.fetch_add(1, Ordering::Relaxed) % 90 == 0 {
                 let hits = q.values().filter(|s| snapshot_hit(&h, s.input()).is_some()).count();
-                tracing::info!(inputs = q.len(), hits, "xr input frame");
+                let desc: Vec<String> = q.values().map(|s| match s.input() {
+                    InputDataType::Pointer { data } => format!("ptr o={:?} d={:?} dist={:.3}", Vec3::from(data.pose.position), Vec3::from(data.direction()), s.distance()),
+                    InputDataType::Hand { data } => format!("hand tip={:?} dist={:.3}", Vec3::from(data.index.tip.pose.position), s.distance()),
+                    InputDataType::Tip { data } => format!("tip p={:?} dist={:.3}", Vec3::from(data.pose.position), s.distance()),
+                }).collect();
+                tracing::info!(inputs = q.len(), hits, ?desc, r = h.radius_m, "xr input frame");
             }
         }
         let hovering = |s: &InputSnapshot| snapshot_hit(&h, s.input()).is_some();
