@@ -12,8 +12,8 @@ pub mod panel;
 
 pub use cylinder::{CylinderAnchor, CylinderState, PanelMetrics, PanelSlot, SlotId};
 pub use hit_test::{CurvedHitTest, CylinderSliceHitTest};
-pub use layout_ipc::{default_socket_path, LayoutClient, LayoutEvent, LayoutRequest, SocketLayoutClient};
-pub use mesh::bake_curved_panel_glb;
+pub use layout_ipc::{default_socket_path, LayoutClient, LayoutDaemon, LayoutEvent, LayoutRequest, SocketLayoutClient};
+pub use mesh::{bake_curved_panel_glb, bake_curved_panel_glb_in};
 pub use panel::PanelWorker;
 
 /// Scaffold-era error type. Narrow once IPC and XR paths exist.

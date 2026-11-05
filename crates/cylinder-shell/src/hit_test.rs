@@ -15,7 +15,7 @@ pub trait CurvedHitTest {
 }
 
 /// Hit-test for a cylinder-slice panel centred at `yaw_rad` on radius `radius_m`.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CylinderSliceHitTest {
     pub radius_m: f32,
     pub yaw_rad: f32,
@@ -23,10 +23,112 @@ pub struct CylinderSliceHitTest {
     pub height_m: f32,
 }
 
+/// Frame: cylinder-local. Axis is +Y through the origin (the user), forward is -Z,
+/// yaw + = right (+X). A point at azimuth `phi` is `(r sin phi, y, -r cos phi)`.
+/// The panel belt is centred on y = 0 (callers subtract group height first).
+/// The front face looks inward (toward the axis); rays must hit it from inside.
 impl CurvedHitTest for CylinderSliceHitTest {
     fn ray_to_surface_uv(&self, origin: [f32; 3], direction: [f32; 3]) -> Option<(f32, f32)> {
-        let _ = (origin, direction);
-        // Intersect ray with cylinder, reject back-face / outside arc / outside height.
-        todo!("CylinderSliceHitTest::ray_to_surface_uv")
+        let [ox, oy, oz] = origin;
+        let [dx, dy, dz] = direction;
+        let r = self.radius_m;
+        let a = dx * dx + dz * dz;
+        if a < 1e-12 || r <= 0.0 {
+            return None; // parallel to axis
+        }
+        let b = 2.0 * (ox * dx + oz * dz);
+        let c = ox * ox + oz * oz - r * r;
+        let disc = b * b - 4.0 * a * c;
+        if disc < 0.0 {
+            return None;
+        }
+        let sq = disc.sqrt();
+        let mut ts = [(-b - sq) / (2.0 * a), (-b + sq) / (2.0 * a)];
+        ts.sort_by(|x, y| x.partial_cmp(y).unwrap());
+        for t in ts {
+            if t <= 0.0 {
+                continue;
+            }
+            let (x, y, z) = (ox + t * dx, oy + t * dy, oz + t * dz);
+            // Front face: inward normal (-x, 0, -z)/r must oppose the ray.
+            if dx * x + dz * z <= 0.0 {
+                continue;
+            }
+            let phi = x.atan2(-z);
+            let mut d = phi - self.yaw_rad;
+            d = (d + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+            let u = 0.5 + d * r / self.width_m;
+            let v = 0.5 - y / self.height_m;
+            if (0.0..=1.0).contains(&u) && (0.0..=1.0).contains(&v) {
+                return Some((u, v));
+            }
+        }
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn panel(yaw: f32) -> CylinderSliceHitTest {
+        CylinderSliceHitTest { radius_m: 0.7, yaw_rad: yaw, width_m: 0.6, height_m: 0.4 }
+    }
+    fn dir(yaw: f32, pitch: f32) -> [f32; 3] {
+        [yaw.sin() * pitch.cos(), pitch.sin(), -yaw.cos() * pitch.cos()]
+    }
+    fn close(a: (f32, f32), b: (f32, f32)) -> bool {
+        (a.0 - b.0).abs() < 1e-4 && (a.1 - b.1).abs() < 1e-4
+    }
+
+    #[test]
+    fn centre_ray_hits_centre() {
+        for yaw in [0.0, 0.8, -2.5, 3.1] {
+            let uv = panel(yaw).ray_to_surface_uv([0.0; 3], dir(yaw, 0.0)).unwrap();
+            assert!(close(uv, (0.5, 0.5)), "{yaw} {uv:?}");
+        }
+    }
+
+    #[test]
+    fn edges_and_corners_from_axis() {
+        let p = panel(0.3);
+        let half = p.width_m / 2.0 / p.radius_m; // arc half-angle
+        // right edge, top: direction toward (yaw+half, y=+h/2) at radius r
+        let target_y = p.height_m / 2.0 * 0.999;
+        let az = p.yaw_rad + half * 0.999;
+        let d = [p.radius_m * az.sin(), target_y, -p.radius_m * az.cos()];
+        let uv = p.ray_to_surface_uv([0.0; 3], d).unwrap();
+        assert!(uv.0 > 0.998 && uv.1 < 0.002, "{uv:?}");
+        // a quarter in from the left, bottom quarter
+        let az = p.yaw_rad - half / 2.0;
+        let d = [p.radius_m * az.sin(), -p.height_m / 4.0, -p.radius_m * az.cos()];
+        assert!(close(p.ray_to_surface_uv([0.0; 3], d).unwrap(), (0.25, 0.75)));
+    }
+
+    #[test]
+    fn misses_outside_arc_height_and_behind() {
+        let p = panel(0.0);
+        assert!(p.ray_to_surface_uv([0.0; 3], dir(0.6, 0.0)).is_none()); // past arc edge
+        assert!(p.ray_to_surface_uv([0.0; 3], dir(0.0, 0.5)).is_none()); // above
+        assert!(p.ray_to_surface_uv([0.0; 3], dir(std::f32::consts::PI, 0.0)).is_none()); // behind
+        assert!(p.ray_to_surface_uv([0.0; 3], [0.0, 1.0, 0.0]).is_none()); // along axis
+    }
+
+    #[test]
+    fn off_axis_origin_and_back_face() {
+        let p = panel(0.0);
+        // head offset 0.2 m right, aiming at panel centre (0,0,-0.7)
+        let o = [0.2, 0.0, 0.0];
+        let uv = p.ray_to_surface_uv(o, [-0.2, 0.0, -0.7]).unwrap();
+        assert!(close(uv, (0.5, 0.5)));
+        // from outside, looking back at the panel's rear: rejected
+        let behind = p.ray_to_surface_uv([0.0, 0.0, -2.0], [0.0, 0.0, 1.0]);
+        // ray enters at z=-0.7 (back face, rejected) then exits at z=+0.7 (yaw=pi, outside arc)
+        assert!(behind.is_none());
+    }
+
+    #[test]
+    fn uv_to_px() {
+        assert_eq!(panel(0.0).uv_to_panel_px((0.5, 0.25), (1280, 720)), (640.0, 180.0));
     }
 }

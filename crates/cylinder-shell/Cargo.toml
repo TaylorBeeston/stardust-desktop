@@ -23,6 +23,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
 gluon-ipc = "0.1.1"
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
 
 [dependencies.stardust-xr-fusion]
 version = "0.53.0-rc.1"
