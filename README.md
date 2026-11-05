@@ -96,12 +96,18 @@ already running get adopted.
 
 Black-hole swallow (stash into the wrist) is a separate client and is not wired into this menu yet.
 
-## Cylinder WM (planned panel shell)
+## Cylinder WM (panel shell, in progress)
 
-The curved, tiling-WM-style layout is planned as a **dedicated Stardust panel shell**: a
-`stardust-xr-wayland-service -p` panel shell that arranges *any* Wayland surface on a shared
-cylinder around you (tiling-WM feel, drop-in windows, group grab/recenter). It is not built yet,
-and it will land in this repo (e.g. `crates/cylinder-shell`) as its own crate.
+The curved, tiling-WM-style layout is a **dedicated Stardust panel shell** in
+`crates/cylinder-shell` (design: `docs/cylinder-shell-design.md`): a
+`stardust-xr-wayland-service -p` worker per window plus a `cylinder-layout` daemon that owns the
+shared cylinder (drop-in windows, group grab/recenter, no app_id special cases).
+
+**Implemented, unit-tested headless:** layout daemon + socket IPC (slot packing with a gap
+ahead, group grab/radius/recenter, unregister on disconnect), curved ray→UV hit-test, curved
+GLB bake, worker registration + `NoServer` dry run (`just install-cylinder-shell`).
+**Not yet (needs a headset session):** the XR side of the worker (accepting the PanelItem,
+drawing the curved `SurfaceModel`, curved input Field). Don't point `-p` at it yet.
 
 **Today** the panels are plain Flatland. `stardust_panel_shell` runs whatever `flatland` it
 finds (`FLATLAND_BIN` overrides) and passes per-window density and fixed resolution from

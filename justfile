@@ -35,4 +35,4 @@ verify:
 # the Flatland-backed stardust_panel_shell until the cylinder worker accepts panels.
 install-cylinder-shell: build
     install -Dm755 -t {{prefix}}/bin target/release/cylinder-shell target/release/cylinder-layout
-    @echo "cylinder-shell scaffold installed; point -p at {{prefix}}/bin/cylinder-shell only after PanelItemAcceptor is wired (see docs/cylinder-shell-design.md)"
+    @echo "cylinder-shell + cylinder-layout installed (layout/IPC/hit-test/mesh done; XR accept path pending). Do not point -p at it yet (see docs/cylinder-shell-design.md)"

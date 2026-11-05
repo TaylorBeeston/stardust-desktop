@@ -225,6 +225,42 @@ Binaries:
 
 Install stub: `just install` may install both under `$PREFIX/bin` and point a future `stardust_cylinder_shell` libexec wrapper at `cylinder-shell` (does **not** replace today's Flatland-backed `stardust_panel_shell` until ready).
 
+## Implementation status (2026-11-04, headless fill-in)
+
+Implemented and unit-tested without a headset (`cargo test -p cylinder-shell`, 16 tests):
+
+- **Layout** (`cylinder.rs`): `assign_slot` keeps an empty `gap_m` arc straight ahead and packs
+  panels alternately right/left outward in registration order, `PANEL_SPACING_M` (2 cm) apart,
+  using arc length (so yaw scales 1/r). `release_slot` / `update_metrics` / `set_radius`
+  (clamped 0.2–5 m) re-pack everyone; `apply_group_grab` wraps yaw to (-π, π]; `reanchor`.
+- **IPC** (`layout_ipc.rs`, `cylinder-layout` bin): newline-delimited JSON over a Unix socket at
+  `$CYLINDER_LAYOUT_SOCK` or `$XDG_RUNTIME_DIR/stardust-cylinder/layout.sock`. Daemon replies
+  `Assigned` to the newcomer and pushes `GroupChanged` to every other worker on any change;
+  a dropped connection is treated as `Bye`. `bind` refuses a live socket and replaces a stale one.
+- **Hit-test** (`hit_test.rs`): ray ↔ cylinder in the cylinder-local frame (axis +Y, forward −Z,
+  yaw + = right, belt at y = 0); front face only (ray from inside); u right, v down.
+- **Mesh** (`mesh.rs`): Flatland `curve.rs` GLB bake ported (pure std, headless), cached under
+  `$XDG_RUNTIME_DIR/cylinder-shell/`.
+- **Worker** (`panel.rs`, `main.rs`): `SlotPlacement` (pose + hit-test from slot+group);
+  binary registers with the daemon, bakes its mesh, and without `SDXR_PROTECTED_PANEL` runs a
+  `NoServer` dry run (exit 0). With `SDXR_PROTECTED_PANEL` set it exits 2: the Asteroids
+  `PanelItemAcceptor` client is **not** written yet (needs a live server to verify).
+
+### Deviations from the sketch above
+
+1. `CylinderState` carries `slots` + `next_id` (`#[serde(skip)]`) so the daemon's layout can
+   live on the type the sketch put the methods on. Snapshots on the wire omit them.
+2. `LayoutRequest` gained `GroupGrab`, `SetRadius`, `Reanchor` (bead/recenter controls).
+3. `bake_curved_panel_glb` returns `io::Result<PathBuf>`; `bake_curved_panel_glb_in(dir, ..)` added.
+4. `PanelWorker::apply_slot` returns `SlotPlacement`; `on_accept_panel` only marks accepted.
+5. Re-pack on removal is order-based, so a neighbour can switch sides (tiling feel, not sticky).
+
+### Open (headset)
+
+Placement orientation vs the mesh's concave side: `SlotPlacement` rotates +Z to face the axis
+while the ported GLB bends toward −Z (Flatland's *measured* concave convention). Confirm in
+headset which face reads concave and flip one side if needed. Plus gaps 1–8 above.
+
 ## Headset-only verification gaps
 
 Cannot close without a live WiVRn / Quest session (do **not** restart tonight):
