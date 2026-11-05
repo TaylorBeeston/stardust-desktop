@@ -13,6 +13,7 @@ pub mod mods;
 pub mod outline;
 pub mod panel;
 pub mod pointer_uv;
+pub mod pointer_button;
 pub mod preflight;
 pub mod xr;
 

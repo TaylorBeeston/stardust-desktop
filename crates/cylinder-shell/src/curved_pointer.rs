@@ -145,7 +145,7 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
                 let hits = q.values().filter(|s| snapshot_hit(&h, s.input()).is_some()).count();
                 let desc: Vec<String> = q.values().map(|s| match s.input() {
                     InputDataType::Pointer { data } => format!("ptr o={:?} d={:?} dist={:.3}", Vec3::from(data.pose.position), Vec3::from(data.direction()), s.distance()),
-                    InputDataType::Hand { data } => format!("hand tip={:?} dist={:.3}", Vec3::from(data.index.tip.pose.position), s.distance()),
+                    InputDataType::Hand { data } => format!("hand tip={:?} pinch_gap={:.3} captured={} dist={:.3}", Vec3::from(data.index.tip.pose.position), Vec3::from(data.thumb.tip.pose.position).distance(Vec3::from(data.index.tip.pose.position)), s.captured(), s.distance()),
                     InputDataType::Tip { data } => format!("tip p={:?} dist={:.3}", Vec3::from(data.pose.position), s.distance()),
                 }).collect();
                 tracing::info!(inputs = q.len(), hits, ?desc, r = h.radius_m, "xr input frame");
@@ -160,6 +160,20 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
                 _ => s.datamap_f32(key) > 0.5,
             }
         };
+        // Closest hovering (or captured) input drives motion + scroll + visuals.
+        let input = inner.input.input();
+        let best = input
+            .values()
+            .filter_map(|s| snapshot_hit(&h, s.input()).map(|hit| (s, hit)))
+            .min_by(|a, b| a.0.distance().total_cmp(&b.0.distance()));
+        // Enter/position the wl_pointer at the curved hit BEFORE emitting a pinch button.
+        if let Some((snap, hit)) = best {
+            (self.on_motion.0)(state, hit.uv);
+            let scroll = snap.datamap_vec2("scroll");
+            if scroll.x != 0.0 || scroll.y != 0.0 {
+                (self.on_scroll.0)(state, [scroll.x, scroll.y]);
+            }
+        }
         for (action, btn, interact) in [
             (&mut inner.left, BTN_LEFT, Box::new(pressed("select", |h| &h.index)) as Box<dyn Fn(&InputSnapshot) -> bool>),
             (&mut inner.middle, BTN_MIDDLE, Box::new(pressed("middle", |h| &h.middle))),
@@ -173,20 +187,9 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
                 (self.on_button.0)(state, btn, false);
             }
         }
-        // Closest hovering (or captured) input drives motion + scroll + visuals.
-        let input = inner.input.input();
-        let best = input
-            .values()
-            .filter_map(|s| snapshot_hit(&h, s.input()).map(|hit| (s, hit)))
-            .min_by(|a, b| a.0.distance().total_cmp(&b.0.distance()));
         let interacting = inner.left.actor_acting() || inner.middle.actor_acting() || inner.right.actor_acting();
         let mut viz: Vec<Line> = Vec::new();
         if let Some((snap, hit)) = best {
-            (self.on_motion.0)(state, hit.uv);
-            let scroll = snap.datamap_vec2("scroll");
-            if scroll.x != 0.0 || scroll.y != 0.0 {
-                (self.on_scroll.0)(state, [scroll.x, scroll.y]);
-            }
             if let Some(line) = hover_line_from_input(&h, snap, hit, interacting) {
                 viz.push(line);
             }

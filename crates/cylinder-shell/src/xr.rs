@@ -257,14 +257,35 @@ impl CylinderShell {
         })
     }
 
+    fn forward_pointer_button(&mut self, source: &'static str, button: u32, pressed: bool,
+        timestamp: Option<stardust_xr_fusion::types::Timestamp>) {
+        self.last_input_at = Some(Instant::now());
+        tracing::info!(source, button, code = %format_args!("{button:#x}"), pressed,
+            cursor = ?self.cursor_px, "pointer button received");
+        let Some(shell) = &self.shell else {
+            tracing::warn!(source, button, pressed, "pointer button dropped: no accepted PanelItem");
+            return;
+        };
+        let result = crate::pointer_button::dispatch_button(self.cursor_px, button, pressed, |event| {
+            match event {
+                crate::pointer_button::PointerEvent::Motion(position) =>
+                    shell.item().pointer_motion(SurfaceId::Toplevel, None, position.into(), timestamp),
+                crate::pointer_button::PointerEvent::Button {code, pressed} =>
+                    shell.item().pointer_button(SurfaceId::Toplevel, code, pressed, timestamp),
+            }
+        });
+        match result {
+            Ok(()) => tracing::info!(source, button, code = %format_args!("{button:#x}"), pressed,
+                cursor = ?self.cursor_px, "pointer motion and button queued to PanelItem"),
+            Err(error) => tracing::warn!(source, button, pressed, %error, "pointer button forwarding failed"),
+        }
+    }
+
     fn mouse_handler(&self) -> MouseHandler<Self> {
         let item = self.shell.as_ref().map(|s| s.item().clone());
         MouseHandler::<Self>::new()
             .on_button(|state: &mut Self, button, pressed, timestamp| {
-                state.last_input_at = Some(Instant::now());
-                tracing::info!(button, pressed, cursor = ?state.cursor_px, "manifold mouse button");
-                let Some(shell) = &state.shell else { return };
-                let _ = shell.item().pointer_button(SurfaceId::Toplevel, button, pressed, timestamp);
+                state.forward_pointer_button("manifold", button, pressed, timestamp);
             })
             .on_motion(|state: &mut Self, motion, timestamp| {
                 state.last_input_at = Some(Instant::now());
@@ -336,9 +357,7 @@ impl CylinderShell {
                     let _ = shell.item().pointer_motion(SurfaceId::Toplevel, None, [x, y].into(), None);
                 })
                 .on_button(|state: &mut Self, button, pressed| {
-                    let Some(shell) = &state.shell else { return };
-                    tracing::info!(button, pressed, "xr pointer button");
-                    let _ = shell.item().pointer_button(SurfaceId::Toplevel, button, pressed, None);
+                    state.forward_pointer_button("xr", button, pressed, None);
                 })
                 .on_scroll(|state: &mut Self, delta| {
                     let Some(shell) = &state.shell else { return };
