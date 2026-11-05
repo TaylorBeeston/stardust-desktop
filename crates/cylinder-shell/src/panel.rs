@@ -104,4 +104,22 @@ mod tests {
         let uv = p.hit_test.ray_to_surface_uv(p.ray_local(head, &g), (p.position - head).to_array()).unwrap();
         assert!((uv.0 - 0.5).abs() < 1e-4 && (uv.1 - 0.5).abs() < 1e-4);
     }
+
+    #[test]
+    fn mesh_axis_matches_placement_axis_and_edges_remain_on_group_cylinder() {
+        let mut group = CylinderState::default();
+        group.radius_m = 0.7;
+        group.yaw_rad = 0.4;
+        let metrics = PanelMetrics {size_px: (1280, 720), density_px_per_m: 2000.0, app_id: None, title: None};
+        let slot = group.assign_slot(&metrics);
+        let placement = SlotPlacement::compute(&slot, &group);
+        let h = crate::mesh::rendered_slice(slot.width_m, slot.height_m, group.radius_m);
+        let axis = placement.position + placement.rotation * Vec3::Z * h.radius_m;
+        assert!(axis.x.abs() < 1e-5 && axis.z.abs() < 1e-5, "mesh and placement axes must agree");
+        for u in [0.0, 0.1, 0.5, 0.9, 1.0] {
+            let p = placement.position + placement.rotation * Vec3::from(h.surface_point(u, 0.5, 0.0));
+            assert!((p.x.hypot(p.z) - group.radius_m).abs() < 1e-5);
+        }
+    }
+
 }

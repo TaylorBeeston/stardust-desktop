@@ -1,7 +1,7 @@
 //! Curved panel focus outline (thin border along the slice edge).
 
 use crate::hit_test::CylinderSliceHitTest;
-use crate::pointer_uv::uv_to_mesh_local;
+use crate::pointer_uv::OVERLAY_INSET_M;
 use stardust_xr_fusion::drawable::Line;
 use stardust_xr_fusion::types::rgba_linear;
 use stardust_xr_molecules::lines::{line_from_points, LineExt as _};
@@ -13,7 +13,7 @@ pub const FOCUS_OUTLINE_TIMEOUT: Duration = Duration::from_secs(2);
 /// Line thickness in metres (Flatland debug outline uses ~line_thickness; keep readable).
 pub const FOCUS_OUTLINE_THICKNESS: f32 = 0.003;
 /// Slightly in front of the visible +Z face so the border is not z-fought inside the mesh.
-pub const FOCUS_OUTLINE_OFFSET_M: f32 = 0.002;
+pub const FOCUS_OUTLINE_OFFSET_M: f32 = OVERLAY_INSET_M;
 
 /// Closed polyline following the curved panel's UV rectangle (top → right → bottom → left).
 pub fn curved_panel_border(width_m: f32, height_m: f32, radius_m: f32) -> Line {
@@ -58,16 +58,7 @@ pub fn curved_panel_border_segs(width_m: f32, height_m: f32, radius_m: f32, segs
 /// Surface point offset toward the user (+Z-facing side) so the line sits
 /// in front of the mesh rather than inside it.
 fn outline_point(h: &CylinderSliceHitTest, u: f32, v: f32) -> [f32; 3] {
-    let p = uv_to_mesh_local(h, u, v);
-    let phi = (0.5 - u) * h.width_m / h.radius_m.max(1e-6);
-    let (s, c) = phi.sin_cos();
-    // SlotPlacement rotates +Z toward the user. The arc axis at -radius is
-    // behind the panel, so a negative radial offset hides the line in the mesh.
-    [
-        p[0] + s * FOCUS_OUTLINE_OFFSET_M,
-        p[1],
-        p[2] + c * FOCUS_OUTLINE_OFFSET_M,
-    ]
+    h.surface_point(u, v, FOCUS_OUTLINE_OFFSET_M)
 }
 
 #[cfg(test)]
@@ -103,11 +94,11 @@ mod tests {
     fn border_is_curved_and_in_front_of_the_surface_across_the_arc() {
         let line = curved_panel_border(0.6, 0.4, 0.45);
         let top = &line.points[..25];
-        assert!(top[12].point.z - top[0].point.z > 0.09, "top edge must follow the arc, not a chord");
+        assert!(top[0].point.z - top[12].point.z > 0.09, "top edge must follow the arc, not a chord");
         for point in &line.points {
             let p = point.point;
-            let radial_distance = (p.x * p.x + (p.z + 0.45).powi(2)).sqrt();
-            assert!((radial_distance - (0.45 + FOCUS_OUTLINE_OFFSET_M)).abs() < 1e-5,
+            let radial_distance = (p.x * p.x + (p.z - 0.45).powi(2)).sqrt();
+            assert!((radial_distance - (0.45 - FOCUS_OUTLINE_OFFSET_M)).abs() < 1e-5,
                 "border must sit on the user-facing side, got {p:?}");
         }
     }

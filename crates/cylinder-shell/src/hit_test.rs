@@ -68,9 +68,23 @@ impl CurvedHitTest for CylinderSliceHitTest {
 }
 
 impl CylinderSliceHitTest {
-    /// Project a point in **mesh-local** frame (panel centre at origin, bend toward −Z,
-    /// axis at `(0, 0, −radius)`) onto panel UV. Used when a Field hover lands in the
-    /// panel spatial — Fusion has no curved Field, so callers own this remapping.
+    /// A point on the rendered slice, offset inward toward the viewer axis.
+    /// Texture U increases toward -X; logical cursor pixels are converted separately.
+    pub fn surface_point(&self, u: f32, v: f32, inset_m: f32) -> [f32; 3] {
+        let phi = (0.5 - u) * self.width_m / self.radius_m;
+        let (s, c) = phi.sin_cos();
+        let r = self.radius_m - inset_m;
+        [r * s, (0.5 - v) * self.height_m, self.radius_m - r * c]
+    }
+
+    pub fn surface_rotation(&self, u: f32) -> glam::Quat {
+        let phi = (0.5 - u) * self.width_m / self.radius_m;
+        glam::Quat::from_rotation_y(-phi)
+    }
+
+    /// Project a point in **mesh-local** frame (panel centre at origin, edges toward +Z,
+    /// axis at `(0, 0, +radius)`) onto panel UV. Used when a Field hover lands in the
+    /// panel spatial. Field segments route input; this projection returns exact UV.
     /// `yaw_rad` is ignored (the mesh is always centred on its own yaw).
     pub fn mesh_local_point_to_uv(&self, point: [f32; 3]) -> Option<(f32, f32)> {
         let [x, y, z] = point;
@@ -78,8 +92,8 @@ impl CylinderSliceHitTest {
         if r <= 0.0 || self.width_m <= 0.0 || self.height_m <= 0.0 {
             return None;
         }
-        // Axis at (0,0,-r): vector from axis to point is (x, y, z+r).
-        let phi = x.atan2(z + r);
+        // The placement faces +Z toward the cylinder axis / viewer.
+        let phi = x.atan2(r - z);
         let half = self.width_m * 0.5 / r;
         if phi.abs() > half * 1.0001 {
             return None;

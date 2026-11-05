@@ -15,7 +15,7 @@ use crate::outline::{curved_panel_border, FOCUS_OUTLINE_TIMEOUT};
 use crate::hit_test::CylinderSliceHitTest;
 use crate::layout_ipc::{apply_layout_event, LayoutEvent, LayoutRequestSender, LayoutSession};
 use crate::mesh::bake_curved_panel_glb;
-use crate::pointer_uv::{cursor_mesh_transform, uv_to_surface_px};
+use crate::pointer_uv::{cursor_mesh_transform, cursor_surface_uv, mesh_uv_to_surface_px};
 use crate::panel::{PanelWorker, SlotPlacement};
 use crate::PanelMetrics;
 use glam::{Quat, Vec3};
@@ -189,7 +189,8 @@ impl Reify for CylinderShell {
         _tasks: impl Tasker<Self>,
         _props: (),
     ) -> impl Element<Self> {
-        let field = field_shape_for_slice(self.width_m, self.height_m, self.radius_m);
+        let h = self.slice_hit_test();
+        let field = field_shape_for_slice(h.width_m, h.height_m, h.radius_m);
         Entity::new(field)
             .pose(self.pose)
             .component(Derezzable::program_stopper(context))
@@ -216,19 +217,10 @@ impl Reify for CylinderShell {
     }
 }
 
-fn panel_resource() -> Resource {
-    // Same mesh Flatland uses for cursor SurfaceModel; texture comes from Cursor updates.
-    // Resolves via STARDUST_RES_PREFIXES (wrapper adds bootstrap share).
-    Resource::Namespaced {
-        namespace: "org.stardustxr.Flatland".into(),
-        path: "panel".into(),
-    }
-}
-
 impl CylinderShell {
     /// Mesh-local hit-test for this panel (yaw is irrelevant in mesh-local frame).
     pub fn slice_hit_test(&self) -> CylinderSliceHitTest {
-        CylinderSliceHitTest { radius_m: self.radius_m, yaw_rad: 0.0, width_m: self.width_m, height_m: self.height_m }
+        crate::mesh::rendered_slice(self.width_m, self.height_m, self.radius_m)
     }
 
     fn keyboard_handler(&self) -> KeyboardHandler<Self> {
@@ -327,7 +319,8 @@ impl CylinderShell {
             }
         }
         // Style (thickness/color/toward-user offset) is baked in curved_panel_border.
-        let line = curved_panel_border(self.width_m, self.height_m, self.radius_m);
+        let h = self.slice_hit_test();
+        let line = curved_panel_border(h.width_m, h.height_m, h.radius_m);
         Some(Lines::new([line]).build())
     }
 
@@ -338,7 +331,7 @@ impl CylinderShell {
             CurvedPointerPlane::new(self.slice_hit_test())
                 .on_motion(|state: &mut Self, uv| {
                     let Some(shell) = &state.shell else { return };
-                    let [x, y] = uv_to_surface_px(uv, state.size_px);
+                    let [x, y] = mesh_uv_to_surface_px(uv, state.size_px);
                     state.cursor_px = [x, y];
                     let _ = shell.item().pointer_motion(SurfaceId::Toplevel, None, [x, y].into(), None);
                 })
@@ -389,35 +382,32 @@ impl CylinderShell {
     fn cursor_model(&self) -> Option<impl Element<Self> + use<>> {
         let shell = self.shell.as_ref()?;
         let geometry = self.cursor?;
-        let density = self.worker.metrics.density_px_per_m;
+        if geometry.size.x == 0 || geometry.size.y == 0 { return None; }
         let (pos, scl) = cursor_mesh_transform(
             &self.slice_hit_test(),
             self.cursor_px,
             self.size_px,
             [geometry.origin.x as f32, geometry.origin.y as f32],
             [geometry.size.x as f32, geometry.size.y as f32],
-            density,
         );
-        Some(
-            SurfaceModel::new(shell, SurfaceUpdateTarget::Cursor, panel_resource(), "Panel")
-                .pos(pos)
-                .scl(scl)
-                .build(),
-        )
+        let h = self.slice_hit_test();
+        let inset_r = h.radius_m - crate::pointer_uv::OVERLAY_INSET_M;
+        let path = crate::mesh::bake_cursor_glb(scl[0] * inset_r / h.radius_m, scl[1], inset_r).ok()?;
+        let (u, _) = cursor_surface_uv(self.cursor_px, self.size_px,
+            [geometry.origin.x as f32, geometry.origin.y as f32],
+            [geometry.size.x as f32, geometry.size.y as f32]);
+        Some(stardust_xr_asteroids::elements::Spatial::default().build().stable_children([
+            (path.clone(), SurfaceModel::new(shell, SurfaceUpdateTarget::Cursor, Resource::Direct {path: path.to_string_lossy().into_owned()}, "Panel")
+                .pos(pos).rot(h.surface_rotation(u)).build())
+        ]))
     }
 
     fn surface_model(&self) -> Option<impl Element<Self> + use<>> {
         let shell = self.shell.as_ref()?;
         let path = self.mesh_path.clone()?;
-        Some(
-            SurfaceModel::new(
-                shell,
-                SurfaceUpdateTarget::Toplevel,
-                Resource::Direct { path },
-                "Panel",
-            )
-            .build(),
-        )
+        Some(stardust_xr_asteroids::elements::Spatial::default().build().stable_children([
+            (path.clone(), SurfaceModel::new(shell, SurfaceUpdateTarget::Toplevel, Resource::Direct {path}, "Panel").build())
+        ]))
     }
 
     /// Recursively await layout events and re-pose / remesh on `GroupChanged`.

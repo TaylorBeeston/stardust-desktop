@@ -1,7 +1,7 @@
 //! Bake a cylinder-slice GLB for `SurfaceModel` (ported from Flatland `curve.rs` lab).
 //!
-//! Mesh frame matches Flatland's measured convention: panel centre at the origin, edges
-//! wrapping toward -Z around an axis at (0, 0, -radius). UV convention: **u increases toward
+//! Mesh frame matches SlotPlacement: panel centre at the origin, edges
+//! wrapping toward +Z around the viewer axis at (0, 0, +radius). UV convention: **u increases toward
 //! −X** (+X edge u=0, −X edge u=1), +Y -> v=0 — Flatland's `curve.rs` `1 − t` bake, which
 //! reads correctly on the **concave (inside)** face in the headset. The same convention is
 //! used by `CylinderSliceHitTest::mesh_local_point_to_uv` / pointer UV so the texel under a
@@ -33,12 +33,26 @@ pub fn segments_for(arc_rad: f32) -> usize {
 }
 
 pub fn bake_curved_panel_glb_in(dir: &Path, width_m: f32, height_m: f32, radius_m: f32) -> io::Result<PathBuf> {
+    let h = rendered_slice(width_m, height_m, radius_m);
+    write_slice_glb(dir, h.width_m, h.height_m, h.radius_m, "cyl-v2")
+}
+
+/// Exactly the dimensions stored in the GLB, also used for overlays and fields.
+pub fn rendered_slice(width_m: f32, height_m: f32, radius_m: f32) -> crate::hit_test::CylinderSliceHitTest {
     let q = |v: f32| (v * 100.0).round().max(1.0) / 100.0;
-    let (width, height, radius) = (q(width_m), q(height_m), quantize_radius_m(radius_m));
-    // cap arc at 175 deg like Flatland's mesh_radius
-    let radius = radius.max(width / 175f32.to_radians());
-    let mm = |v: f32| (v * 1000.0).round() as i64;
-    let path = dir.join(format!("cyl-{}x{}-r{}.glb", mm(width), mm(height), mm(radius)));
+    let (width, height) = (q(width_m), q(height_m));
+    let radius = quantize_radius_m(radius_m).max(width / 175f32.to_radians());
+    crate::hit_test::CylinderSliceHitTest {width_m: width, height_m: height, radius_m: radius, yaw_rad: 0.0}
+}
+
+/// Small curved cursor patch; dimensions must not be rounded to panel-size centimetres.
+pub fn bake_cursor_glb(width: f32, height: f32, radius: f32) -> io::Result<PathBuf> {
+    write_slice_glb(&cache_dir(), width, height, radius, "cursor-v2")
+}
+
+fn write_slice_glb(dir: &Path, width: f32, height: f32, radius: f32, prefix: &str) -> io::Result<PathBuf> {
+    let mm = |v: f32| (v * 1_000_000.0).round() as i64;
+    let path = dir.join(format!("{prefix}-{}x{}-r{}.glb", mm(width), mm(height), mm(radius)));
     if path.exists() {
         return Ok(path);
     }
@@ -46,15 +60,15 @@ pub fn bake_curved_panel_glb_in(dir: &Path, width_m: f32, height_m: f32, radius_
     let arc = width / radius;
     let segs = segments_for(arc);
     let (mut pos, mut uv, mut nrm, mut idx) = (vec![], vec![], vec![], Vec::<u16>::new());
+    let h = crate::hit_test::CylinderSliceHitTest {radius_m: radius, width_m: width, height_m: height, yaw_rad: 0.0};
     for i in 0..=segs {
         let t = i as f32 / segs as f32;
         let th = (t - 0.5) * arc;
         let (s, c) = th.sin_cos();
-        let (x, z) = (radius * s, -radius * (1.0 - c));
-        for (y, v) in [(height / 2.0, 0.0f32), (-height / 2.0, 1.0)] {
-            pos.extend([x, y, z]);
+        for v in [0.0f32, 1.0] {
+            pos.extend(h.surface_point(1.0 - t, v, 0.0));
             uv.extend([1.0 - t, v]);
-            nrm.extend([s, 0.0, c]);
+            nrm.extend([-s, 0.0, c]);
         }
     }
     for i in 0..segs as u16 {
@@ -78,9 +92,9 @@ pub fn bake_curved_panel_glb_in(dir: &Path, width_m: f32, height_m: f32, radius_
     let zmax = radius * (1.0 - (arc / 2.0).cos());
     let xmax = if arc / 2.0 >= std::f32::consts::FRAC_PI_2 { radius } else { radius * (arc / 2.0).sin() };
     let json = format!(
-        r#"{{"asset":{{"version":"2.0","generator":"cylinder-shell mesh.rs"}},"scene":0,"scenes":[{{"nodes":[0]}}],"nodes":[{{"mesh":0,"name":"Panel"}}],"meshes":[{{"name":"Panel","primitives":[{{"attributes":{{"POSITION":0,"TEXCOORD_0":1,"NORMAL":2}},"indices":3}}]}}],"accessors":[{{"bufferView":0,"componentType":5126,"count":{nv},"type":"VEC3","min":[{nx},{ny},{nz}],"max":[{xmax},{hy},0]}},{{"bufferView":1,"componentType":5126,"count":{nv},"type":"VEC2"}},{{"bufferView":2,"componentType":5126,"count":{nv},"type":"VEC3"}},{{"bufferView":3,"componentType":5123,"count":{ni},"type":"SCALAR"}}],"bufferViews":[{{"buffer":0,"byteOffset":0,"byteLength":{uv_off},"target":34962}},{{"buffer":0,"byteOffset":{uv_off},"byteLength":{uvl},"target":34962}},{{"buffer":0,"byteOffset":{n_off},"byteLength":{nl},"target":34962}},{{"buffer":0,"byteOffset":{i_off},"byteLength":{il},"target":34963}}],"buffers":[{{"byteLength":{bl}}}]}}"#,
+        r#"{{"asset":{{"version":"2.0","generator":"cylinder-shell mesh.rs"}},"scene":0,"scenes":[{{"nodes":[0]}}],"nodes":[{{"mesh":0,"name":"Panel"}}],"meshes":[{{"name":"Panel","primitives":[{{"attributes":{{"POSITION":0,"TEXCOORD_0":1,"NORMAL":2}},"indices":3}}]}}],"accessors":[{{"bufferView":0,"componentType":5126,"count":{nv},"type":"VEC3","min":[{nx},{ny},0],"max":[{xmax},{hy},{nz}]}},{{"bufferView":1,"componentType":5126,"count":{nv},"type":"VEC2"}},{{"bufferView":2,"componentType":5126,"count":{nv},"type":"VEC3"}},{{"bufferView":3,"componentType":5123,"count":{ni},"type":"SCALAR"}}],"bufferViews":[{{"buffer":0,"byteOffset":0,"byteLength":{uv_off},"target":34962}},{{"buffer":0,"byteOffset":{uv_off},"byteLength":{uvl},"target":34962}},{{"buffer":0,"byteOffset":{n_off},"byteLength":{nl},"target":34962}},{{"buffer":0,"byteOffset":{i_off},"byteLength":{il},"target":34963}}],"buffers":[{{"byteLength":{bl}}}]}}"#,
         nx = -xmax,
-        nz = -zmax,
+        nz = zmax,
         ny = -height / 2.0,
         hy = height / 2.0,
         ni = idx.len(),
@@ -135,7 +149,7 @@ mod tests {
         for v in 0..nv {
             let rd = |k: usize| f32::from_le_bytes(bytes[boff + (v * 3 + k) * 4..][..4].try_into().unwrap());
             let (x, z) = (rd(0), rd(2));
-            assert!((x * x + (z + r) * (z + r) - r * r).abs() < 1e-4);
+            assert!((x * x + (z - r) * (z - r) - r * r).abs() < 1e-4);
         }
         // cache quantizes inputs: nearby sizes reuse the same path
         assert_eq!(bake_curved_panel_glb_in(dir.path(), 0.641, 0.36, 0.70).unwrap(), p);
@@ -170,4 +184,29 @@ mod tests {
         }
         assert!(saw_pos_x && saw_neg_x);
     }
+
+    #[test]
+    fn cursor_patch_vertices_stay_in_front_at_both_panel_edges() {
+        let dir = tempfile::tempdir().unwrap();
+        let h = rendered_slice(0.42666668, 0.24, 0.45);
+        let eps = crate::pointer_uv::OVERLAY_INSET_M;
+        let radius = h.radius_m - eps;
+        let path = write_slice_glb(dir.path(), 0.012, 0.012, radius, "cursor-test").unwrap();
+        let bytes = std::fs::read(path).unwrap();
+        let json_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let json: serde_json::Value = serde_json::from_slice(&bytes[20..20 + json_len]).unwrap();
+        let bin = &bytes[28 + json_len..];
+        let count = json["accessors"][0]["count"].as_u64().unwrap() as usize;
+        for u in [0.0, 0.02, 0.5, 0.98, 1.0] {
+            let centre = glam::Vec3::from(h.surface_point(u, 0.5, eps));
+            let rot = h.surface_rotation(u);
+            for vertex in 0..count {
+                let read = |component: usize| f32::from_le_bytes(bin[vertex * 12 + component * 4..vertex * 12 + component * 4 + 4].try_into().unwrap());
+                let p = centre + rot * glam::Vec3::new(read(0), read(1), read(2));
+                let rho = (p.x * p.x + (p.z - h.radius_m).powi(2)).sqrt();
+                assert!((rho - radius).abs() < 1e-5, "edge {u}, cursor vertex {vertex}: radius {rho}, expected {radius}");
+            }
+        }
+    }
+
 }
