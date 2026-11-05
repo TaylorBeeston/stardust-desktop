@@ -71,20 +71,30 @@ Stop: `pkill -f 'host-mirror[^ ]* --label'`. To turn curving off for every panel
 
 ## Wrist menu config
 
-`wrist-menu` puts a watch on the back of your left wrist. Tap the face to open it, then tap a row
-to toggle a widget. Items live in `~/.config/org.stardustxr.WristMenu/items.txt` (written with
-defaults on first run, honours `XDG_CONFIG_HOME`):
+`wrist-menu` puts a watch on the back of your left wrist. Tap the face to open it. Tap the
+**left/center** of a row to toggle that item on or off. When it is on, tap the right **"here"**
+strip to **place it in front of you** — that kills the process and respawns it with a fresh
+head-relative `STARDUST_STARTUP_TOKEN` (yaw-only upright pose at the configured offset). Desk toys
+do not speak a relocate IPC yet, so place = respawn-at-head; a future toychest can stash vs activate
+without changing this menu contract.
+
+Items live in `~/.config/org.stardustxr.WristMenu/items.txt` (written with defaults on first run,
+honours `XDG_CONFIG_HOME`):
 
 ```
-# label | command (args ok) | spawn offset from your head: right,up,forward (forward is -)
-Battery | battery-widget | 0.18,-0.2,-0.45
-Spin sign | spin-sign | -0.22,-0.3,-0.45
-Newton's cradle | newtons-cradle | 0.0,-0.32,-0.4
+# label | command (args ok) | spawn offset from your head: right,up,forward (forward is -) [| kind]
+# kind is optional: toy (default) or widget — reserved for a future toychest; behaviour is the same today.
+Battery | battery-widget | 0.18,-0.2,-0.45 | widget
+Spin sign | spin-sign | -0.22,-0.3,-0.45 | toy
+Newton's cradle | newtons-cradle | 0.0,-0.32,-0.4 | toy
 ```
 
 Lines starting with `#` and lines with no command are skipped. A missing or bad offset falls back
-to `0,-0.25,-0.45`. Which items are on is stored in `~/.local/state/wrist-menu/enabled`. Widgets
-that are already running get adopted.
+to `0,-0.25,-0.45`. An unknown `kind` is ignored (treated as `toy`), so older three-column files
+still load. Which items are on is stored in `~/.local/state/wrist-menu/enabled`. Widgets that are
+already running get adopted.
+
+Black-hole swallow (stash into the wrist) is a separate client and is not wired into this menu yet.
 
 ## Cylinder WM (planned panel shell)
 

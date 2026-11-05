@@ -1,5 +1,6 @@
 # ~/.config/org.stardustxr.WristMenu/items.txt
-# label | command (args ok) | spawn offset from your head: right,up,forward (forward is -)
-Battery | battery-widget | 0.18,-0.2,-0.45
-Spin sign | spin-sign | -0.22,-0.3,-0.45
-Newton's cradle | newtons-cradle | 0.0,-0.32,-0.4
+# label | command (args ok) | spawn offset from your head: right,up,forward (forward is -) [| kind]
+# kind is optional: toy (default) or widget — for a future toychest; behaviour is the same today.
+Battery | battery-widget | 0.18,-0.2,-0.45 | widget
+Spin sign | spin-sign | -0.22,-0.3,-0.45 | toy
+Newton's cradle | newtons-cradle | 0.0,-0.32,-0.4 | toy
