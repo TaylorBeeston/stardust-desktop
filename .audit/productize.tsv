@@ -40,3 +40,5 @@ ts	actor	decision	detail
 2026-11-04 21:57:49 PST	roadie	gap	headset_group_bead	visual bead under gap + Grabbable→send_group_grab unverified; gap 3	design gap 3	open
 2026-11-04 21:58:03 PST	roadie	push_main	layout IPC keep-alive + deviation 8 partial	bfbe1b4; cargo test -p cylinder-shell 32 ok	pushed
 2026-11-04 21:59:16 PST	roadie	cyl-group-grab	keep layout IPC open during XR via LayoutSession	GroupGrab needs socket alive after asteroids::run; prior drop closed it before XR	bfbe1b4 (audit 5952bc7)	32 tests green; deviation 8 partially resolved; visual bead still headset
+2026-11-04 22:01:23 PST	supersede	21:51:56 skip group_grab_worker superseded by bfbe1b4 LayoutSession (IPC only); visual bead remains gap 3	skim of skip row would conclude group-grab was dropped; IPC landed six minutes later	bfbe1b4	superseded
+2026-11-04 22:01:23 PST	supersede	header is 4 cols; rows use 6-7; 21:59:16 row duplicates push_main with different column order — normalise header to dominant 6-col form next cleanup	parsers misread; Attention review flagged schema drift	.audit/productize.tsv	note
