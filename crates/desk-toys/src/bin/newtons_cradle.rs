@@ -3,7 +3,9 @@
 //! pendulums, so 1, 2 or 3 balls in means 1, 2 or 3 balls out.
 
 use desk_toys::{
-    env_pos, identity_rot, inertia::{self, Inertia}, init_tracing, pose_predict_dt,
+    env_pos, identity_rot,
+    inertia::Inertia,
+    init_tracing,
     touch::{Touch, TouchFrame},
     upright,
 };
@@ -40,6 +42,8 @@ const PIVOT_FRICTION: f32 = 0.12;
 const RESTITUTION: f32 = 0.985;
 const CONTACT: f32 = 0.0006;
 const MAX_SPEED: f32 = 3.0;
+// Preserve the old sub-millisecond collision resolution, independent of display rate.
+const PHYSICS_DT: f64 = 1.0 / 1440.0;
 
 fn rest_x(i: usize) -> f32 {
     (i as f32 - (N - 1) as f32 / 2.0) * SPACING
@@ -56,8 +60,7 @@ pub struct Cradle {
     pub phi: [f32; N],
     pub omega: [f32; N],
     pub held: Option<(usize, HeldBy)>,
-    /// `Context::time()` when `phi`/`omega` were last integrated
-    sim_t: f32,
+    accumulator: f64,
 }
 
 impl Cradle {
@@ -70,17 +73,20 @@ impl Cradle {
         Vec3::new(rest_x(i) + L * s, PIVOT_Y - L * c, 0.0)
     }
 
-    /// Pose-predicted ball center for display (coasts with current omega).
-    pub fn display_center(&self, i: usize, predict_dt: f32) -> Vec3 {
-        Self::center_at(i, inertia::coast(self.phi[i], self.omega[i], predict_dt))
+    /// Collision-constrained poses must not coast independently past the next impact.
+    /// Clamp the render horizon to zero; physics stays authoritative at contact.
+    pub fn display_center(&self, i: usize, _predict_dt: f32) -> Vec3 {
+        self.center(i)
     }
 
-    pub fn display_phi(&self, i: usize, predict_dt: f32) -> f32 {
-        inertia::coast(self.phi[i], self.omega[i], predict_dt)
+    pub fn display_phi(&self, i: usize, _predict_dt: f32) -> f32 {
+        self.phi[i]
     }
 
     fn angle_toward(i: usize, p: Vec3) -> f32 {
-        (p.x - rest_x(i)).atan2(PIVOT_Y - p.y).clamp(-MAX_ANGLE, MAX_ANGLE)
+        (p.x - rest_x(i))
+            .atan2(PIVOT_Y - p.y)
+            .clamp(-MAX_ANGLE, MAX_ANGLE)
     }
 
     /// Settled: nothing held, nothing shaking, everything (nearly) still. Snaps to exact rest
@@ -100,15 +106,20 @@ impl Cradle {
     /// Advance the pendulums; `target` drags one (held) ball toward an angle; `accel` is the
     /// frame's own acceleration in toy space (you carrying/shaking it), felt as a pseudo-force.
     pub fn step(&mut self, dt: f32, target: Option<(usize, f32)>, accel: Vec3) {
+        if !dt.is_finite() || dt <= 0.0 {
+            return;
+        }
         if self.settle(target, accel) {
+            self.accumulator = 0.0;
             return;
         }
         // effective gravity in the toy's frame: real gravity minus the frame's acceleration
         let (gx, gy) = (-accel.x, -G - accel.y);
-        let substeps = (dt / 0.0008).ceil().max(1.0) as usize;
-        let h = dt / substeps as f32;
+        self.accumulator += f64::from(dt.min(0.1));
+        let h = PHYSICS_DT as f32;
         let held = target.map(|(i, _)| i);
-        for _ in 0..substeps {
+        while self.accumulator + 1e-7 >= PHYSICS_DT {
+            self.accumulator -= PHYSICS_DT;
             for i in 0..N {
                 match target {
                     Some((j, angle)) if j == i => {
@@ -271,7 +282,12 @@ struct State {
 }
 impl Default for State {
     fn default() -> Self {
-        State { pos: [0.0; 3].into(), rot: identity_rot(), cradle: Cradle::default(), inertia: Inertia::default() }
+        State {
+            pos: [0.0; 3].into(),
+            rot: identity_rot(),
+            cradle: Cradle::default(),
+            inertia: Inertia::default(),
+        }
     }
 }
 impl Migrate for State {
@@ -290,9 +306,9 @@ fn on_frame(state: &mut State, frame: &TouchFrame) {
     let rot = Quat::from(state.rot);
     state.inertia.sample(Vec3::from(state.pos), rot, frame.dt);
     let target = state.cradle.interact(frame);
-    // Integrate with FrameInfo.delta, then stamp sim time for declarative pose predict.
-    state.cradle.step(frame.dt, target, state.inertia.linear(rot));
-    state.cradle.sim_t = frame.display_t;
+    state
+        .cradle
+        .step(frame.dt, target, state.inertia.linear(rot));
 }
 
 /// Chrome frame as rods: (from, to) in toy space. `rod.glb` is a unit rod along +Y.
@@ -334,8 +350,13 @@ fn string_lines(c: &Cradle, predict_dt: f32) -> Vec<Line> {
 }
 
 impl Reify for State {
-    fn reify(&self, context: &Context, _tasks: impl Tasker<Self>, _props: ()) -> impl Element<Self> {
-        let predict = pose_predict_dt(context, self.cradle.sim_t);
+    fn reify(
+        &self,
+        _context: &Context,
+        _tasks: impl Tasker<Self>,
+        _props: (),
+    ) -> impl Element<Self> {
+        let predict = 0.0;
         let boxed = |size: [f32; 3], at: [f32; 3]| Shape::Transform {
             shape: Box::new(Shape::Box { size: size.into() }),
             transform: Mat4::from_translation(at.into()).into(),
@@ -343,7 +364,10 @@ impl Reify for State {
         // the move handle: base + the whole chrome frame (bars and legs), never the balls, so
         // pinching the frame moves the cradle and pinching a ball pulls the ball
         let (w, d, t) = (WIDTH / 2.0, BAR_Z, 0.014);
-        let mut handle = vec![boxed([WIDTH + 0.03, t, 2.0 * BAR_Z + 0.04], [0.0, -0.007, 0.0])];
+        let mut handle = vec![boxed(
+            [WIDTH + 0.03, t, 2.0 * BAR_Z + 0.04],
+            [0.0, -0.007, 0.0],
+        )];
         for z in [-d, d] {
             handle.push(boxed([WIDTH + t, t, t], [0.0, PIVOT_Y, z]));
             for x in [-w, w] {
@@ -352,7 +376,9 @@ impl Reify for State {
         }
         let base = Shape::Union { shapes: handle };
         let play = Shape::Transform {
-            shape: Box::new(Shape::Box { size: [WIDTH + 0.06, PIVOT_Y + 0.03, 2.0 * BAR_Z + 0.05].into() }),
+            shape: Box::new(Shape::Box {
+                size: [WIDTH + 0.06, PIVOT_Y + 0.03, 2.0 * BAR_Z + 0.05].into(),
+            }),
             transform: Mat4::from_translation([0.0, PIVOT_Y / 2.0, 0.0].into()).into(),
         };
         let balls = (0..N).map(|i| {
@@ -378,7 +404,10 @@ impl Reify for State {
                 Entity::new(play)
                     .component(Touch::new(on_frame))
                     .build()
-                    .child(Model::namespaced("io.github.TaylorBeeston.DeskToys", "cradle_base").build())
+                    .child(
+                        Model::namespaced("io.github.TaylorBeeston.DeskToys", "cradle_base")
+                            .build(),
+                    )
                     .children(frame_rods().into_iter().map(|(a, b)| rod(a, b)))
                     .children([-1.0, 1.0].into_iter().flat_map(|sx| {
                         [-BAR_Z, BAR_Z].map(|z| {
@@ -396,11 +425,16 @@ impl Reify for State {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    desk_toys::migrate_app_config("org.stardustxr.NewtonsCradle", "io.github.TaylorBeeston.NewtonsCradles");
+    desk_toys::migrate_app_config(
+        "org.stardustxr.NewtonsCradle",
+        "io.github.TaylorBeeston.NewtonsCradles",
+    );
     init_tracing("newtons_cradle=info");
-    stardust_xr_asteroids::client::run::<State>(&[&stardust_xr_fusion::project_local_resources!("data")])
-        .await
-        .unwrap();
+    stardust_xr_asteroids::client::run::<State>(&[&stardust_xr_fusion::project_local_resources!(
+        "data"
+    )])
+    .await
+    .unwrap();
 }
 
 #[cfg(test)]
@@ -418,9 +452,17 @@ mod tests {
         let mut c = Cradle::default();
         c.phi[0] = -0.6;
         run(&mut c, 0.32); // quarter period in, quarter period out
-        assert!(c.phi[N - 1] > 0.45, "last ball should swing out: {:?}", c.phi);
+        assert!(
+            c.phi[N - 1] > 0.45,
+            "last ball should swing out: {:?}",
+            c.phi
+        );
         for i in 0..N - 1 {
-            assert!(c.phi[i].abs() < 0.08, "ball {i} should be ~still: {:?}", c.phi);
+            assert!(
+                c.phi[i].abs() < 0.08,
+                "ball {i} should be ~still: {:?}",
+                c.phi
+            );
         }
     }
 
@@ -431,7 +473,11 @@ mod tests {
         c.phi[1] = -0.6;
         run(&mut c, 0.32);
         assert!(c.phi[N - 1] > 0.4 && c.phi[N - 2] > 0.4, "{:?}", c.phi);
-        assert!(c.phi[0].abs() < 0.08 && c.phi[1].abs() < 0.08, "{:?}", c.phi);
+        assert!(
+            c.phi[0].abs() < 0.08 && c.phi[1].abs() < 0.08,
+            "{:?}",
+            c.phi
+        );
     }
 
     #[test]
@@ -500,13 +546,67 @@ mod tests {
     }
 
     #[test]
-    fn display_center_coasts_with_omega() {
+    fn display_prediction_does_not_cross_contact() {
         let mut c = Cradle::default();
-        c.phi[0] = 0.2;
-        c.omega[0] = 1.5;
-        let p0 = c.center(0);
-        let p1 = c.display_center(0, 0.01);
-        // increasing phi moves +X
-        assert!(p1.x > p0.x, "predicted should advance with +omega: {p0} → {p1}");
+        c.omega[0] = 5.0;
+        for dt in [0.0, 0.005, 0.01, 0.03] {
+            let gap = c.display_center(1, dt).x - c.display_center(0, dt).x - 2.0 * R;
+            println!("display horizon {dt}s: gap {gap}m");
+            assert!(gap >= -1e-6, "prediction penetrated by {}m", -gap);
+        }
+    }
+
+    fn momentum_energy(c: &Cradle) -> (f32, f32) {
+        let momentum = (0..N).map(|i| c.speed(i)).sum();
+        let energy = (0..N)
+            .map(|i| 0.5 * (L * c.omega[i]).powi(2) + G * L * (1.0 - c.phi[i].cos()))
+            .sum();
+        (momentum, energy)
+    }
+
+    #[test]
+    fn collision_preserves_momentum_and_dissipates_only_restitution_loss() {
+        let mut c = Cradle::default();
+        c.omega[0] = 5.0;
+        let (p0, e0) = momentum_energy(&c);
+        c.collide(None);
+        let (p1, e1) = momentum_energy(&c);
+        println!("collision momentum {p0} -> {p1}; energy {e0} -> {e1}");
+        assert!((p1 - p0).abs() < 1e-6);
+        assert!(e1 <= e0 + 1e-6 && e1 > 0.9 * e0);
+    }
+
+    #[test]
+    fn collision_trajectory_and_energy_match_at_30_90_144_fps() {
+        let run = |hz: u32| {
+            let mut c = Cradle::default();
+            c.phi[0] = -0.8;
+            let initial = momentum_energy(&c).1;
+            for _ in 0..hz * 2 {
+                c.step(1.0 / hz as f32, None, Vec3::ZERO);
+                for i in 0..N - 1 {
+                    let gap =
+                        c.display_center(i + 1, 0.03).x - c.display_center(i, 0.03).x - 2.0 * R;
+                    assert!(gap > -0.00002, "{hz}Hz overlap {}", -gap);
+                }
+            }
+            let metrics = momentum_energy(&c);
+            println!(
+                "{hz}Hz: momentum={} energy={} (initial={initial}) phi={:?}",
+                metrics.0, metrics.1, c.phi
+            );
+            assert!(metrics.1 < initial);
+            (c, metrics)
+        };
+        let (reference, metrics) = run(30);
+        for hz in [90, 144] {
+            let (c, m) = run(hz);
+            assert!((metrics.0 - m.0).abs() < 1e-5);
+            assert!((metrics.1 - m.1).abs() < 1e-5);
+            for i in 0..N {
+                assert!((c.phi[i] - reference.phi[i]).abs() < 1e-5);
+                assert!((c.omega[i] - reference.omega[i]).abs() < 1e-5);
+            }
+        }
     }
 }
