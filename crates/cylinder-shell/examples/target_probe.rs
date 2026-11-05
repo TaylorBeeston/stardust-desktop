@@ -1,4 +1,4 @@
-//! Read-only snapshot of the handlers simular can see, ranked by gaze-ray distance.
+//! Read-only handlers visible to simular. Optional args: ox oy oz dx dy dz in root space.
 use gluon_ipc::{Context, Handler, Interface, RefExt};
 use stardust_xr_fusion::{
     client::Client, fields::{FieldRef, RayMarchResult},
@@ -27,12 +27,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (client, root) = Client::connect(&[]).await?;
     let hmd = Tracked::hmd_spatial().await?;
     println!("hmd={:?}", client.spatial_interface().get_relative_transform(root.clone(), hmd.clone()).await?);
+    let args = std::env::args().skip(1).map(|s| s.parse::<f32>()).collect::<Result<Vec<_>, _>>()?;
+    let (reference, origin, direction) = if args.len() == 6 {
+        let d = glam::Vec3::new(args[3], args[4], args[5]).normalize();
+        (root.clone(), [args[0], args[1], args[2]], d.to_array())
+    } else if args.is_empty() {
+        (hmd.clone(), [0.0; 3], [0.0, 0.0, -1.0])
+    } else { return Err("expected no arguments or ox oy oz dx dy dz".into()); };
+    println!("ray origin={origin:?} direction={direction:?}");
     let mut keep = Vec::new();
     for id in [MouseHandler::ID, KeyboardHandler::ID] {
         let (node, handler) = BeamQueryHandler::new_node(Probe {root: root.clone(), api: client.spatial_interface().clone()})?;
         let handle = client.spatial_query_interface().beam_query(BeamQuery {
             handler: handler.into_proxy(), interfaces: vec![InterfaceDependency {id: id.into(), optional: false}],
-            reference_spatial: hmd.clone(), origin: [0.0;3].into(), direction: [0.0,0.0,-1.0].into(),
+            reference_spatial: reference.clone(), origin: origin.into(), direction: direction.into(),
             max_length: 10.0, margin: 0.0,
         }).await??;
         keep.push((node, handle));
