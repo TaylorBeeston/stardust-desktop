@@ -12,7 +12,7 @@ pub const FOCUS_OUTLINE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Line thickness in metres (Flatland debug outline uses ~line_thickness; keep readable).
 pub const FOCUS_OUTLINE_THICKNESS: f32 = 0.003;
-/// Slightly in front of the concave face so the border is not z-fought inside the mesh.
+/// Slightly in front of the visible +Z face so the border is not z-fought inside the mesh.
 pub const FOCUS_OUTLINE_OFFSET_M: f32 = 0.002;
 
 /// Closed polyline following the curved panel's UV rectangle (top → right → bottom → left).
@@ -55,17 +55,18 @@ pub fn curved_panel_border_segs(width_m: f32, height_m: f32, radius_m: f32, segs
         .color(rgba_linear!(0.55, 0.85, 1.0, 0.95))
 }
 
-/// Surface point offset toward the user (concave / inside face) so the line sits
+/// Surface point offset toward the user (+Z-facing side) so the line sits
 /// in front of the mesh rather than inside it.
 fn outline_point(h: &CylinderSliceHitTest, u: f32, v: f32) -> [f32; 3] {
     let p = uv_to_mesh_local(h, u, v);
     let phi = (0.5 - u) * h.width_m / h.radius_m.max(1e-6);
     let (s, c) = phi.sin_cos();
-    // Toward user = toward cylinder axis = -outward radial (see mesh: bulge toward −Z).
+    // SlotPlacement rotates +Z toward the user. The arc axis at -radius is
+    // behind the panel, so a negative radial offset hides the line in the mesh.
     [
-        p[0] - s * FOCUS_OUTLINE_OFFSET_M,
+        p[0] + s * FOCUS_OUTLINE_OFFSET_M,
         p[1],
-        p[2] - c * FOCUS_OUTLINE_OFFSET_M,
+        p[2] + c * FOCUS_OUTLINE_OFFSET_M,
     ]
 }
 
@@ -78,7 +79,7 @@ mod tests {
         let line = curved_panel_border(0.6, 0.4, 0.7);
         assert!(line.cyclic);
         assert!(line.points.len() > 16);
-        // Centre of top edge ≈ (0, +h/2, small −Z offset)
+        // Centre of top edge ≈ (0, +h/2, small +Z offset)
         let top_mid = &line.points[12]; // segs=24, top has 25 pts, mid ≈ index 12
         assert!(
             top_mid.point.y > 0.15,
@@ -90,11 +91,25 @@ mod tests {
             "thickness applied, got {}",
             top_mid.thickness
         );
-        // Offset toward user at u=0.5 → −Z
+        // Offset toward user at u=0.5 → +Z
         assert!(
-            top_mid.point.z < -0.0005,
-            "expected toward-user −Z offset, got z={}",
+            top_mid.point.z > 0.0005,
+            "expected toward-user +Z offset, got z={}",
             top_mid.point.z
         );
     }
+
+    #[test]
+    fn border_is_curved_and_in_front_of_the_surface_across_the_arc() {
+        let line = curved_panel_border(0.6, 0.4, 0.45);
+        let top = &line.points[..25];
+        assert!(top[12].point.z - top[0].point.z > 0.09, "top edge must follow the arc, not a chord");
+        for point in &line.points {
+            let p = point.point;
+            let radial_distance = (p.x * p.x + (p.z + 0.45).powi(2)).sqrt();
+            assert!((radial_distance - (0.45 + FOCUS_OUTLINE_OFFSET_M)).abs() < 1e-5,
+                "border must sit on the user-facing side, got {p:?}");
+        }
+    }
+
 }
