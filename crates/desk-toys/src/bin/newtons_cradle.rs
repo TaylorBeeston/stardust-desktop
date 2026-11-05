@@ -3,7 +3,7 @@
 //! pendulums, so 1, 2 or 3 balls in means 1, 2 or 3 balls out.
 
 use desk_toys::{
-    env_pos, identity_rot, inertia::Inertia, init_tracing,
+    env_pos, identity_rot, inertia::{self, Inertia}, init_tracing, pose_predict_dt,
     touch::{Touch, TouchFrame},
     upright,
 };
@@ -56,12 +56,27 @@ pub struct Cradle {
     pub phi: [f32; N],
     pub omega: [f32; N],
     pub held: Option<(usize, HeldBy)>,
+    /// `Context::time()` when `phi`/`omega` were last integrated
+    sim_t: f32,
 }
 
 impl Cradle {
     pub fn center(&self, i: usize) -> Vec3 {
-        let (s, c) = self.phi[i].sin_cos();
+        Self::center_at(i, self.phi[i])
+    }
+
+    fn center_at(i: usize, phi: f32) -> Vec3 {
+        let (s, c) = phi.sin_cos();
         Vec3::new(rest_x(i) + L * s, PIVOT_Y - L * c, 0.0)
+    }
+
+    /// Pose-predicted ball center for display (coasts with current omega).
+    pub fn display_center(&self, i: usize, predict_dt: f32) -> Vec3 {
+        Self::center_at(i, inertia::coast(self.phi[i], self.omega[i], predict_dt))
+    }
+
+    pub fn display_phi(&self, i: usize, predict_dt: f32) -> f32 {
+        inertia::coast(self.phi[i], self.omega[i], predict_dt)
     }
 
     fn angle_toward(i: usize, p: Vec3) -> f32 {
@@ -275,7 +290,9 @@ fn on_frame(state: &mut State, frame: &TouchFrame) {
     let rot = Quat::from(state.rot);
     state.inertia.sample(Vec3::from(state.pos), rot, frame.dt);
     let target = state.cradle.interact(frame);
+    // Integrate with FrameInfo.delta, then stamp sim time for declarative pose predict.
     state.cradle.step(frame.dt, target, state.inertia.linear(rot));
+    state.cradle.sim_t = frame.display_t;
 }
 
 /// Chrome frame as rods: (from, to) in toy space. `rod.glb` is a unit rod along +Y.
@@ -299,13 +316,14 @@ fn rod(from: Vec3, to: Vec3) -> impl Element<State> {
         .build()
 }
 
-fn string_lines(c: &Cradle) -> Vec<Line> {
+fn string_lines(c: &Cradle, predict_dt: f32) -> Vec<Line> {
     // fishing-line thin, faintly warm so it reads against dark rooms
     let thread = rgba_linear!(0.42, 0.4, 0.37, 1.0);
     (0..N)
         .flat_map(|i| {
-            let (s, co) = c.phi[i].sin_cos();
-            let top = c.center(i) + Vec3::new(-s, co, 0.0) * R;
+            let phi = c.display_phi(i, predict_dt);
+            let (s, co) = phi.sin_cos();
+            let top = c.display_center(i, predict_dt) + Vec3::new(-s, co, 0.0) * R;
             [-BAR_Z, BAR_Z].map(|z| {
                 line_from_points(vec![[rest_x(i), PIVOT_Y, z], top.into()])
                     .thickness(0.0006)
@@ -316,7 +334,8 @@ fn string_lines(c: &Cradle) -> Vec<Line> {
 }
 
 impl Reify for State {
-    fn reify(&self, _context: &Context, _tasks: impl Tasker<Self>, _props: ()) -> impl Element<Self> {
+    fn reify(&self, context: &Context, _tasks: impl Tasker<Self>, _props: ()) -> impl Element<Self> {
+        let predict = pose_predict_dt(context, self.cradle.sim_t);
         let boxed = |size: [f32; 3], at: [f32; 3]| Shape::Transform {
             shape: Box::new(Shape::Box { size: size.into() }),
             transform: Mat4::from_translation(at.into()).into(),
@@ -338,7 +357,7 @@ impl Reify for State {
         };
         let balls = (0..N).map(|i| {
             Model::namespaced("io.github.TaylorBeeston.DeskToys", "ball")
-                .pos(self.cradle.center(i))
+                .pos(self.cradle.display_center(i, predict))
                 .build()
         });
         // balls/frame live on a child entity that senses touch; the handle entity above only
@@ -369,7 +388,7 @@ impl Reify for State {
                                 .build()
                         })
                     }))
-                    .child(Lines::new(string_lines(&self.cradle)).build())
+                    .child(Lines::new(string_lines(&self.cradle, predict)).build())
                     .children(balls),
             )
     }
@@ -453,5 +472,41 @@ mod tests {
                 assert!(gap > -0.002, "overlap {gap} at {i}: {:?}", c.phi);
             }
         }
+    }
+
+    /// Same elapsed time at different tick rates → same ball angles (substepped integrator).
+    #[test]
+    fn cradle_step_is_frame_rate_independent() {
+        let run = |hz: f32| {
+            let mut c = Cradle::default();
+            c.phi[0] = -0.8;
+            let total = 0.4_f32;
+            let n = (total * hz).round() as u32;
+            let dt = total / n as f32;
+            for _ in 0..n {
+                c.step(dt, None, Vec3::ZERO);
+            }
+            c.phi
+        };
+        let a = run(30.0);
+        let b = run(90.0);
+        let c = run(144.0);
+        let mut worst = 0.0f32;
+        for i in 0..N {
+            worst = worst.max((a[i] - b[i]).abs()).max((b[i] - c[i]).abs());
+        }
+        println!("cradle φ 30={a:?} 90={b:?} 144={c:?}; worst Δ {worst}");
+        assert!(worst < 0.03, "frame-rate drift {worst}");
+    }
+
+    #[test]
+    fn display_center_coasts_with_omega() {
+        let mut c = Cradle::default();
+        c.phi[0] = 0.2;
+        c.omega[0] = 1.5;
+        let p0 = c.center(0);
+        let p1 = c.display_center(0, 0.01);
+        // increasing phi moves +X
+        assert!(p1.x > p0.x, "predicted should advance with +omega: {p0} → {p1}");
     }
 }
