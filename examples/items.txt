@@ -1,4 +1,4 @@
-# ~/.config/org.stardustxr.WristMenu/items.txt
+# ~/.config/io.github.TaylorBeeston.WristMenu/items.txt
 # label | command (args ok) | spawn offset from your head: right,up,forward (forward is -) [| kind]
 # kind is optional: toy (default) or widget — for a future toychest; behaviour is the same today.
 Battery | battery-widget | 0.18,-0.2,-0.45 | widget

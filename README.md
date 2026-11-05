@@ -36,7 +36,7 @@ just verify           # headless self-check: build, tests, script syntax, temp-p
 `just install` puts:
 
 - binaries and scripts in `$PREFIX/bin`
-- desk-toy models in `$PREFIX/share/org.stardustxr.DeskToys`: add `$PREFIX/share` to `STARDUST_RES_PREFIXES` for the Stardust session
+- desk-toy models in `$PREFIX/share/io.github.TaylorBeeston.DeskToys`: add `$PREFIX/share` to `STARDUST_RES_PREFIXES` for the Stardust session
 - the panel shell in `$PREFIX/libexec/stardust_panel_shell`, with `$PREFIX` baked in (protostar can launch it with a stripped environment)
 
 Point the wayland service at the panel shell in your Stardust startup script:
@@ -78,7 +78,7 @@ head-relative `STARDUST_STARTUP_TOKEN` (yaw-only upright pose at the configured 
 do not speak a relocate IPC yet, so place = respawn-at-head; a future toychest can stash vs activate
 without changing this menu contract.
 
-Items live in `~/.config/org.stardustxr.WristMenu/items.txt` (written with defaults on first run,
+Items live in `~/.config/io.github.TaylorBeeston.WristMenu/items.txt` (written with defaults on first run,
 honours `XDG_CONFIG_HOME`):
 
 ```

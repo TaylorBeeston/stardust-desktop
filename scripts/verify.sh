@@ -12,7 +12,7 @@ step help;   target/release/host-mirror --help >/dev/null
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 step "install into $tmp"; PREFIX="$tmp" just install >/dev/null
 for b in host-mirror wrist-menu newtons-cradle spin-sign stardust-dual-mirror-flat; do test -x "$tmp/bin/$b"; done
-test "$(ls "$tmp"/share/org.stardustxr.DeskToys/*.glb | wc -l)" -ge 5
+test "$(ls "$tmp"/share/io.github.TaylorBeeston.DeskToys/*.glb | wc -l)" -ge 5
 grep -q "PREFIX:-$tmp}" "$tmp/libexec/stardust_panel_shell"
 ! grep -q @PREFIX@ "$tmp/libexec/stardust_panel_shell"
 step "panels.conf parse"

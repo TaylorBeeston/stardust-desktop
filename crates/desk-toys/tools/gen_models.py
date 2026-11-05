@@ -2,7 +2,7 @@
 """Generate the desk toys' glTF models + procedural textures (needs numpy + Pillow).
 
 Lines in Stardust always render order-independent-transparent, so anything solid is a model.
-Usage: tools/gen_models.py   (writes data/org.stardustxr.DeskToys/*.glb)
+Usage: tools/gen_models.py   (writes data/io.github.TaylorBeeston.DeskToys/*.glb)
 
 Dimensions mirror the constants in src/bin/*.rs (BOARD_R, POST_H, R, ...): keep them in sync.
 """
@@ -10,7 +10,7 @@ import io, json, math, struct, pathlib
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
-OUT = pathlib.Path(__file__).resolve().parent.parent / "data" / "org.stardustxr.DeskToys"
+OUT = pathlib.Path(__file__).resolve().parent.parent / "data" / "io.github.TaylorBeeston.DeskToys"
 TAU = 2 * math.pi
 
 # ---------------------------------------------------------------- glb writer

@@ -10,21 +10,21 @@ test:
     cargo test --release --workspace
 
 # Install binaries, desk-toy models, helper scripts and the panel shell into {{prefix}}.
-# Models go to {{prefix}}/share/org.stardustxr.DeskToys: add {{prefix}}/share to STARDUST_RES_PREFIXES.
+# Models go to {{prefix}}/share/io.github.TaylorBeeston.DeskToys: add {{prefix}}/share to STARDUST_RES_PREFIXES.
 install: build
     install -Dm755 -t {{prefix}}/bin target/release/host-mirror target/release/wrist-menu target/release/newtons-cradle target/release/spin-sign
     install -Dm755 -t {{prefix}}/bin scripts/stardust-dual-mirror-flat scripts/stardust-dual-mirror-recenter scripts/stardust-recenter-all
-    install -d {{prefix}}/share/org.stardustxr.DeskToys {{prefix}}/libexec
-    install -m644 crates/desk-toys/data/org.stardustxr.DeskToys/*.glb {{prefix}}/share/org.stardustxr.DeskToys/
+    install -d {{prefix}}/share/io.github.TaylorBeeston.DeskToys {{prefix}}/libexec
+    install -m644 crates/desk-toys/data/io.github.TaylorBeeston.DeskToys/*.glb {{prefix}}/share/io.github.TaylorBeeston.DeskToys/
     sed 's|@PREFIX@|{{prefix}}|g' scripts/stardust_panel_shell.in > {{prefix}}/libexec/stardust_panel_shell
     chmod 755 {{prefix}}/libexec/stardust_panel_shell
     @echo "panel shell: stardust-xr-wayland-service -p {{prefix}}/libexec/stardust_panel_shell"
 
 # Sample configs (won't overwrite existing ones)
 install-config:
-    install -d ~/.config/stardust-desktop ~/.config/org.stardustxr.WristMenu
+    install -d ~/.config/stardust-desktop ~/.config/io.github.TaylorBeeston.WristMenu
     cp -n examples/panels.conf ~/.config/stardust-desktop/panels.conf || true
-    cp -n examples/items.txt ~/.config/org.stardustxr.WristMenu/items.txt || true
+    cp -n examples/items.txt ~/.config/io.github.TaylorBeeston.WristMenu/items.txt || true
 
 # Headless checks: build, tests, script syntax, a throwaway install into a temp prefix
 verify:
