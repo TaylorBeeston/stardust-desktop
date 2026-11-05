@@ -225,9 +225,9 @@ Binaries:
 
 Install stub: `just install` may install both under `$PREFIX/bin` and point a future `stardust_cylinder_shell` libexec wrapper at `cylinder-shell` (does **not** replace today's Flatland-backed `stardust_panel_shell` until ready).
 
-## Implementation status (2026-11-04, headless fill-in)
+## Implementation status (2026-11-04, XR accept path wired)
 
-Implemented and unit-tested without a headset (`cargo test -p cylinder-shell`, 16 tests):
+Implemented and unit-tested without a headset (`cargo test -p cylinder-shell`, **22** tests):
 
 - **Layout** (`cylinder.rs`): `assign_slot` keeps an empty `gap_m` arc straight ahead and packs
   panels alternately right/left outward in registration order, `PANEL_SPACING_M` (2 cm) apart,
@@ -239,12 +239,21 @@ Implemented and unit-tested without a headset (`cargo test -p cylinder-shell`, 1
   a dropped connection is treated as `Bye`. `bind` refuses a live socket and replaces a stale one.
 - **Hit-test** (`hit_test.rs`): ray ↔ cylinder in the cylinder-local frame (axis +Y, forward −Z,
   yaw + = right, belt at y = 0); front face only (ray from inside); u right, v down.
+  `mesh_local_point_to_uv` is ready for a curved PointerPlane remap (not yet attached).
 - **Mesh** (`mesh.rs`): Flatland `curve.rs` GLB bake ported (pure std, headless), cached under
   `$XDG_RUNTIME_DIR/cylinder-shell/`.
-- **Worker** (`panel.rs`, `main.rs`): `SlotPlacement` (pose + hit-test from slot+group);
-  binary registers with the daemon, bakes its mesh, and without `SDXR_PROTECTED_PANEL` runs a
-  `NoServer` dry run (exit 0). With `SDXR_PROTECTED_PANEL` set it exits 2: the Asteroids
-  `PanelItemAcceptor` client is **not** written yet (needs a live server to verify).
+- **Field** (`field_shape.rs`): Fusion has no cylinder-slice SDF; Field is the chord-AABB
+  `Shape::Box` (closest capture volume). Pure math unit-tested.
+- **Preflight** (`preflight.rs`): parse `SDXR_PROTECTED_PANEL=path:name:secret`; require
+  `$XDG_RUNTIME_DIR/stardust-protected-panel-provider/{name}` **and**
+  `stardust-server/stardust-0` exist before `asteroids::run`. Existence only — never connects
+  on bogus env (smoke: isolated XDG, exit 2 in <10 ms).
+- **Worker XR** (`xr.rs`, `main.rs`): Asteroids `ClientState` `CylinderShell` with
+  `PanelItemAcceptor` → `PanelShell` → `SurfaceModel` (`Resource::Direct` baked GLB) + chord
+  Field at the layout-daemon slot pose. No host-mirror `app_id` branches, no `FLATLAND_CURVE_*`.
+  Without `SDXR_PROTECTED_PANEL`: `NoServer` dry run exit 0. With env set + sockets present:
+  enters `run` (needs a real oneshot provider + live server — headset). Workspace
+  `[patch.crates-io] stardust-xr-asteroids` unifies git asteroids with panels-asteroids.
 
 ### Deviations from the sketch above
 
@@ -252,14 +261,21 @@ Implemented and unit-tested without a headset (`cargo test -p cylinder-shell`, 1
    live on the type the sketch put the methods on. Snapshots on the wire omit them.
 2. `LayoutRequest` gained `GroupGrab`, `SetRadius`, `Reanchor` (bead/recenter controls).
 3. `bake_curved_panel_glb` returns `io::Result<PathBuf>`; `bake_curved_panel_glb_in(dir, ..)` added.
-4. `PanelWorker::apply_slot` returns `SlotPlacement`; `on_accept_panel` only marks accepted.
+4. `PanelWorker::apply_slot` returns `SlotPlacement`; `on_accept_panel` records accept (XR path
+   also stores the shell Node and builds SurfaceModel).
 5. Re-pack on removal is order-based, so a neighbour can switch sides (tiling feel, not sticky).
+6. Field is chord AABB Box, not a curved SDF (Fusion limitation). Curved UV remap for
+   PointerPlane is headless-ready but not wired — headset gap #1.
+7. Workspace patches crates.io `stardust-xr-asteroids` to the same git rev desk-toys use so
+   `PanelItemAcceptor: Component` typechecks against the worker's asteroids.
 
 ### Open (headset)
 
 Placement orientation vs the mesh's concave side: `SlotPlacement` rotates +Z to face the axis
 while the ported GLB bends toward −Z (Flatland's *measured* concave convention). Confirm in
-headset which face reads concave and flip one side if needed. Plus gaps 1–8 above.
+headset which face reads concave and flip one side if needed. Plus gaps 1–8 below.
+**Still do not point live `-p` at cylinder-shell** until concave + hit-test are validated on
+headset; live session stays on Flatland `stardust_panel_shell`.
 
 ## Headset-only verification gaps
 

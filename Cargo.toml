@@ -4,3 +4,8 @@ members = ["crates/host-mirror", "crates/desk-toys", "crates/cylinder-shell"]
 
 [profile.release]
 debug = false
+
+[patch.crates-io]
+# panels-asteroids (git panel-item) depends on crates.io asteroids; unify with the git
+# asteroids desk-toys / cylinder-shell already use so PanelItemAcceptor::Component matches.
+stardust-xr-asteroids = { git = "https://github.com/StardustXR/asteroids.git" }

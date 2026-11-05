@@ -67,6 +67,29 @@ impl CurvedHitTest for CylinderSliceHitTest {
     }
 }
 
+impl CylinderSliceHitTest {
+    /// Project a point in **mesh-local** frame (panel centre at origin, bend toward −Z,
+    /// axis at `(0, 0, −radius)`) onto panel UV. Used when a Field hover lands in the
+    /// panel spatial — Fusion has no curved Field, so callers own this remapping.
+    /// `yaw_rad` is ignored (the mesh is always centred on its own yaw).
+    pub fn mesh_local_point_to_uv(&self, point: [f32; 3]) -> Option<(f32, f32)> {
+        let [x, y, z] = point;
+        let r = self.radius_m;
+        if r <= 0.0 || self.width_m <= 0.0 || self.height_m <= 0.0 {
+            return None;
+        }
+        // Axis at (0,0,-r): vector from axis to point is (x, y, z+r).
+        let phi = x.atan2(z + r);
+        let half = self.width_m * 0.5 / r;
+        if phi.abs() > half * 1.0001 {
+            return None;
+        }
+        let u = 0.5 + phi * r / self.width_m;
+        let v = 0.5 - y / self.height_m;
+        ((0.0..=1.0).contains(&u) && (0.0..=1.0).contains(&v)).then_some((u, v))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

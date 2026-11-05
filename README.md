@@ -105,9 +105,13 @@ shared cylinder (drop-in windows, group grab/recenter, no app_id special cases).
 
 **Implemented, unit-tested headless:** layout daemon + socket IPC (slot packing with a gap
 ahead, group grab/radius/recenter, unregister on disconnect), curved ray→UV hit-test, curved
-GLB bake, worker registration + `NoServer` dry run (`just install-cylinder-shell`).
-**Not yet (needs a headset session):** the XR side of the worker (accepting the PanelItem,
-drawing the curved `SurfaceModel`, curved input Field). Don't point `-p` at it yet.
+GLB bake, chord-AABB Field shape, XR preflight (fail-fast without live sockets), and the
+Asteroids accept path (`PanelItemAcceptor` → `PanelShell` → curved `SurfaceModel` + slot pose).
+`just install-cylinder-shell` installs the binaries.
+**Not ready to `-p` yet:** headset must still validate concave mesh face vs placement and
+that pointer UV lands on the mesh the eye sees (Field is a chord AABB Box — Fusion has no
+cylinder-slice SDF; curved PointerPlane remap is coded but unwired). Live `-p` stays on
+Flatland `stardust_panel_shell`.
 
 **Today** the panels are plain Flatland. `stardust_panel_shell` runs whatever `flatland` it
 finds (`FLATLAND_BIN` overrides) and passes per-window density and fixed resolution from

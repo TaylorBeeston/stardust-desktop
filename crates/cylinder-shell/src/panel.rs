@@ -48,6 +48,17 @@ pub struct PanelWorker {
     pub accepted: bool,
 }
 
+impl Default for PanelWorker {
+    fn default() -> Self {
+        Self::new(PanelMetrics {
+            size_px: (1280, 720),
+            density_px_per_m: 3000.0,
+            app_id: None,
+            title: None,
+        })
+    }
+}
+
 impl PanelWorker {
     pub fn new(metrics: PanelMetrics) -> Self {
         Self { slot: None, metrics, placement: None, accepted: false }

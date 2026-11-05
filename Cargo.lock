@@ -723,7 +723,7 @@ dependencies = [
  "gluon-ipc",
  "serde",
  "serde_json",
- "stardust-xr-asteroids 0.53.0-rc.1 (git+https://github.com/StardustXR/asteroids.git)",
+ "stardust-xr-asteroids",
  "stardust-xr-fusion",
  "stardust-xr-panels",
  "stardust-xr-panels-asteroids",
@@ -843,7 +843,7 @@ version = "0.1.0"
 dependencies = [
  "glam",
  "serde",
- "stardust-xr-asteroids 0.53.0-rc.1 (git+https://github.com/StardustXR/asteroids.git)",
+ "stardust-xr-asteroids",
  "stardust-xr-fusion",
  "stardust-xr-molecules",
  "tokio",
@@ -3080,34 +3080,6 @@ dependencies = [
 [[package]]
 name = "stardust-xr-asteroids"
 version = "0.53.0-rc.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e41518b9358c47f16bc0c174bcbe7f5d130deef014b22e0ddb14e929ba048a2"
-dependencies = [
- "bumpalo",
- "derive-where",
- "derive_setters",
- "directories",
- "futures",
- "futures-util",
- "glam",
- "gluon-ipc",
- "inotify",
- "map-range",
- "mint",
- "ouroboros",
- "ron",
- "rustc-hash",
- "serde",
- "stardust-xr-fusion",
- "stardust-xr-molecules",
- "tokio",
- "tracing",
- "zbus",
-]
-
-[[package]]
-name = "stardust-xr-asteroids"
-version = "0.53.0-rc.1"
 source = "git+https://github.com/StardustXR/asteroids.git#05aea7b04360a4deda2da26f3d220573ca139580"
 dependencies = [
  "bumpalo",
@@ -3220,7 +3192,7 @@ dependencies = [
  "gluon-ipc",
  "mint",
  "rustc-hash",
- "stardust-xr-asteroids 0.53.0-rc.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "stardust-xr-asteroids",
  "stardust-xr-fusion",
  "stardust-xr-panels",
  "tokio",

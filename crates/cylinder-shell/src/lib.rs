@@ -1,20 +1,29 @@
 //! Cylinder panel shell for Stardust XR.
 //!
 //! Design: `docs/cylinder-shell-design.md` (Candidate B: per-window PanelShell worker
-//! + `cylinder-layout` daemon). Types and signatures are the contract; fill-in replaces
-//! `todo!()` / `not_implemented` bodies.
+//! + `cylinder-layout` daemon).
 
 pub mod cylinder;
+pub mod field_shape;
 pub mod hit_test;
 pub mod layout_ipc;
 pub mod mesh;
 pub mod panel;
+pub mod preflight;
+pub mod xr;
 
 pub use cylinder::{CylinderAnchor, CylinderState, PanelMetrics, PanelSlot, SlotId};
+pub use field_shape::{field_shape_for_slice, slice_aabb_extents};
 pub use hit_test::{CurvedHitTest, CylinderSliceHitTest};
-pub use layout_ipc::{default_socket_path, LayoutClient, LayoutDaemon, LayoutEvent, LayoutRequest, SocketLayoutClient};
+pub use layout_ipc::{
+    default_socket_path, LayoutClient, LayoutDaemon, LayoutEvent, LayoutRequest, SocketLayoutClient,
+};
 pub use mesh::{bake_curved_panel_glb, bake_curved_panel_glb_in};
-pub use panel::PanelWorker;
+pub use panel::{PanelWorker, SlotPlacement};
+pub use preflight::{
+    parse_protected_panel_env, preflight_xr, provider_socket_path, server_socket_path, PreflightError,
+};
+pub use xr::{install_pending, CylinderShell, PendingLaunch};
 
 /// Scaffold-era error type. Narrow once IPC and XR paths exist.
 #[derive(Debug, thiserror::Error)]
