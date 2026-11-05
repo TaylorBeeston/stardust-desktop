@@ -4,10 +4,14 @@
 //! host-mirror `app_id` branches or Flatland `FLATLAND_CURVE_*` env.
 //!
 //! Field: Fusion has no cylinder-slice SDF; we attach the chord-AABB `Shape::Box` from
-//! [`crate::field_shape`]. Curved pointer UV remapping (`mesh_local_point_to_uv`) is
-//! implemented in hit-test but not yet wired into a PointerPlane (headset check).
+//! [`crate::field_shape`]. Pointer / hand input is wired through
+//! [`crate::curved_pointer::CurvedPointerPlane`]: the chord-AABB Field only gates capture;
+//! the landing texel comes from the true arc (`pointer_uv` / `mesh_local_point_to_uv`).
 
+use crate::curved_pointer::CurvedPointerPlane;
 use crate::field_shape::field_shape_for_slice;
+use crate::hit_test::CylinderSliceHitTest;
+use crate::pointer_uv::uv_to_surface_px;
 use crate::panel::{PanelWorker, SlotPlacement};
 use crate::PanelMetrics;
 use glam::{Quat, Vec3};
@@ -18,7 +22,7 @@ use stardust_xr_asteroids::{
     components::Derezzable,
 };
 use stardust_xr_fusion::types::{Posef, Resource, Size2};
-use stardust_xr_panels::panel_item::SurfaceUpdateTarget;
+use stardust_xr_panels::panel_item::{ScrollSource, SurfaceId, SurfaceUpdateTarget};
 use stardust_xr_panels_asteroids::{
     panel_item_acceptor::PanelItemAcceptor,
     panel_shell::{PanelShell, PanelShellHandler},
@@ -139,12 +143,40 @@ impl Reify for CylinderShell {
                 state.shell = Some(shell);
             }))
             .build()
+            .maybe_child(self.pointer_plane())
             .maybe_child(self.panel_shell(context))
             .maybe_child(self.surface_model())
     }
 }
 
 impl CylinderShell {
+    /// Mesh-local hit-test for this panel (yaw is irrelevant in mesh-local frame).
+    pub fn slice_hit_test(&self) -> CylinderSliceHitTest {
+        CylinderSliceHitTest { radius_m: self.radius_m, yaw_rad: 0.0, width_m: self.width_m, height_m: self.height_m }
+    }
+
+    /// Curved pointer input; only once a PanelItem is accepted (nothing to send to before).
+    fn pointer_plane(&self) -> Option<impl Element<Self> + use<>> {
+        self.shell.as_ref()?;
+        Some(
+            CurvedPointerPlane::new(self.slice_hit_test())
+                .on_motion(|state: &mut Self, uv| {
+                    let Some(shell) = &state.shell else { return };
+                    let [x, y] = uv_to_surface_px(uv, state.size_px);
+                    let _ = shell.item().pointer_motion(SurfaceId::Toplevel, None, [x, y].into(), None);
+                })
+                .on_button(|state: &mut Self, button, pressed| {
+                    let Some(shell) = &state.shell else { return };
+                    let _ = shell.item().pointer_button(SurfaceId::Toplevel, button, pressed, None);
+                })
+                .on_scroll(|state: &mut Self, delta| {
+                    let Some(shell) = &state.shell else { return };
+                    let _ = shell.item().pointer_scroll_discrete(SurfaceId::Toplevel, delta.into(), ScrollSource::Wheel, None);
+                })
+                .build(),
+        )
+    }
+
     fn panel_shell(&self, context: &Context) -> Option<impl Element<Self> + use<>> {
         let shell = self.shell.as_ref()?;
         let context = context.clone();

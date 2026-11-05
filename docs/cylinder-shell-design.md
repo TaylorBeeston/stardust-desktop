@@ -225,9 +225,9 @@ Binaries:
 
 Install stub: `just install` may install both under `$PREFIX/bin` and point a future `stardust_cylinder_shell` libexec wrapper at `cylinder-shell` (does **not** replace today's Flatland-backed `stardust_panel_shell` until ready).
 
-## Implementation status (2026-11-04, XR accept path wired)
+## Implementation status (2026-11-04, XR accept + curved pointer UV wired)
 
-Implemented and unit-tested without a headset (`cargo test -p cylinder-shell`, **22** tests):
+Implemented and unit-tested without a headset (`cargo test -p cylinder-shell`, **28** tests):
 
 - **Layout** (`cylinder.rs`): `assign_slot` keeps an empty `gap_m` arc straight ahead and packs
   panels alternately right/left outward in registration order, `PANEL_SPACING_M` (2 cm) apart,
@@ -239,7 +239,16 @@ Implemented and unit-tested without a headset (`cargo test -p cylinder-shell`, *
   a dropped connection is treated as `Bye`. `bind` refuses a live socket and replaces a stale one.
 - **Hit-test** (`hit_test.rs`): ray ↔ cylinder in the cylinder-local frame (axis +Y, forward −Z,
   yaw + = right, belt at y = 0); front face only (ray from inside); u right, v down.
-  `mesh_local_point_to_uv` is ready for a curved PointerPlane remap (not yet attached).
+  `mesh_local_point_to_uv` maps mesh-local points onto the arc.
+- **Pointer UV** (`pointer_uv.rs`, `curved_pointer.rs`): **wired.** `CurvedPointerPlane` (Asteroids
+  custom element, child of the panel Entity once a PanelItem is accepted) owns an `InputQueue`
+  on a padded chord-AABB Field in mesh-local space. Pointer rays → `mesh_local_ray_hit`
+  (ray ∩ cylinder about `(0,0,−r)`, nearest on-slice hit, double-sided); hand index tip / tip →
+  `mesh_local_point_hit` (radial projection, hover band −2..20 cm). UV → clamped px →
+  `PanelItem::pointer_motion` on `SurfaceId::Toplevel`; select/middle/context (or thumb–finger
+  pinch) → `pointer_button` BTN_LEFT/MIDDLE/RIGHT; datamap `scroll` → `pointer_scroll_discrete`.
+  Replaces Flatland's flat `x + w/2` remap; unit tests show the flat proxy is >3 px off near
+  edges at r = 0.7 m. Touch (`touch_down/move/up`) and child surfaces are not routed yet.
 - **Mesh** (`mesh.rs`): Flatland `curve.rs` GLB bake ported (pure std, headless), cached under
   `$XDG_RUNTIME_DIR/cylinder-shell/`.
 - **Field** (`field_shape.rs`): Fusion has no cylinder-slice SDF; Field is the chord-AABB
@@ -264,10 +273,14 @@ Implemented and unit-tested without a headset (`cargo test -p cylinder-shell`, *
 4. `PanelWorker::apply_slot` returns `SlotPlacement`; `on_accept_panel` records accept (XR path
    also stores the shell Node and builds SurfaceModel).
 5. Re-pack on removal is order-based, so a neighbour can switch sides (tiling feel, not sticky).
-6. Field is chord AABB Box, not a curved SDF (Fusion limitation). Curved UV remap for
-   PointerPlane is headless-ready but not wired — headset gap #1.
+6. Field is still a chord-AABB Box, not a curved SDF (Fusion has no cylinder-slice SDF). It
+   only gates *whether* input is captured (so a ray can be captured in the box's empty corners
+   and then miss the arc → no motion sent). *Where* it lands is now the true arc UV.
 7. Workspace patches crates.io `stardust-xr-asteroids` to the same git rev desk-toys use so
    `PanelItemAcceptor: Component` typechecks against the worker's asteroids.
+8. Group grab / bead handle on the worker: **skipped.** The worker drops its layout socket
+   before `asteroids::run`, so there is no live channel for `GroupGrab` from XR; wiring it
+   needs the layout client kept on a tokio task plus `GroupChanged` → re-pose. Next step.
 
 ### Open (headset)
 
@@ -281,13 +294,13 @@ headset; live session stays on Flatland `stardust_panel_shell`.
 
 Cannot close without a live WiVRn / Quest session (do **not** restart tonight):
 
-1. Curved Field / ray hit-test vs flat proxy (the Flatland phase-2 gap) — confirm pointer lands on the mesh the eye sees.
+1. Curved pointer UV is wired but unverified: confirm the cursor lands on the texel the eye sees (also checks u direction vs the GLB's `+X → u=0` texcoords and which face reads concave).
 2. Multi-app drop-in: Ghostty + browser + host-mirror on one cylinder without app_id config.
 3. Group bead grab and radius drag under motion reprojection / WiVRn latency.
 4. Gap-ahead stability when panels resize (density / fixed-res changes).
 5. Daemon death / restart while workers live.
 6. Protostar stripped-env launch of `cylinder-shell` (PATH / `STARDUST_RES_PREFIXES` baked like today's libexec wrapper).
-7. Touch path on curved mesh (mirror of pointer hit-test).
+7. Touch path on curved mesh (`touch_*` not routed; hands currently drive pointer motion + pinch buttons).
 8. Child surfaces / popups (Flatland `ChildState`) on a curved parent.
 
 ## References

@@ -719,12 +719,14 @@ checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 name = "cylinder-shell"
 version = "0.1.0"
 dependencies = [
+ "derive-where",
  "glam",
  "gluon-ipc",
  "serde",
  "serde_json",
  "stardust-xr-asteroids",
  "stardust-xr-fusion",
+ "stardust-xr-molecules",
  "stardust-xr-panels",
  "stardust-xr-panels-asteroids",
  "tempfile",
