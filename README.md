@@ -107,14 +107,16 @@ shared cylinder (drop-in windows, group grab/recenter, no app_id special cases).
 ahead, group grab/radius/recenter, unregister on disconnect), curved ray→UV hit-test **wired to
 pointer input** (`CurvedPointerPlane`: ray/hand → arc UV → `pointer_motion`/`pointer_button`), curved
 GLB bake, chord-AABB Field shape, XR preflight (fail-fast without live sockets), and the
-Asteroids accept path (`PanelItemAcceptor` → `PanelShell` → curved `SurfaceModel` + slot pose).
+Asteroids accept path (`PanelItemAcceptor` → `PanelShell` → curved `SurfaceModel` + slot pose),
+and layout IPC keep-alive during XR (`LayoutSession` + `GroupChanged` → re-pose/remesh).
 `just install-cylinder-shell` installs the binaries.
 UV convention: u increases toward +X (left edge u=0) in both the baked mesh texcoords and the
 pointer hit-test (unlike Flatland's `curve.rs`, which bakes `1 − t`).
 **Not ready to `-p` yet:** headset must still validate concave mesh face vs placement and
 that pointer UV lands on the mesh the eye sees. The Field is still a chord-AABB Box (Fusion has
-no cylinder-slice SDF), so it only gates capture; the landing point comes from the arc. Touch
-and group-grab-from-XR are not wired yet. Live `-p` stays on
+no cylinder-slice SDF), so it only gates capture; the landing point comes from the arc. Layout
+IPC stays open during XR (`GroupChanged` re-poses; GroupGrab/SetRadius/Reanchor sendable);
+the visual group-grab bead and touch path still need headset. Live `-p` stays on
 Flatland `stardust_panel_shell`.
 
 **Today** the panels are plain Flatland. `stardust_panel_shell` runs whatever `flatland` it

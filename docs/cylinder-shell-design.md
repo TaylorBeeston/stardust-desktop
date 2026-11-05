@@ -225,9 +225,9 @@ Binaries:
 
 Install stub: `just install` may install both under `$PREFIX/bin` and point a future `stardust_cylinder_shell` libexec wrapper at `cylinder-shell` (does **not** replace today's Flatland-backed `stardust_panel_shell` until ready).
 
-## Implementation status (2026-11-04, XR accept + curved pointer UV wired)
+## Implementation status (2026-11-04, XR accept + layout IPC keep-alive)
 
-Implemented and unit-tested without a headset (`cargo test -p cylinder-shell`, **28** tests):
+Implemented and unit-tested without a headset (`cargo test -p cylinder-shell`, **32** tests):
 
 - **Layout** (`cylinder.rs`): `assign_slot` keeps an empty `gap_m` arc straight ahead and packs
   panels alternately right/left outward in registration order, `PANEL_SPACING_M` (2 cm) apart,
@@ -264,7 +264,9 @@ Implemented and unit-tested without a headset (`cargo test -p cylinder-shell`, *
   on bogus env (smoke: isolated XDG, exit 2 in <10 ms).
 - **Worker XR** (`xr.rs`, `main.rs`): Asteroids `ClientState` `CylinderShell` with
   `PanelItemAcceptor` → `PanelShell` → `SurfaceModel` (`Resource::Direct` baked GLB) + chord
-  Field at the layout-daemon slot pose. No host-mirror `app_id` branches, no `FLATLAND_CURVE_*`.
+  Field at the layout-daemon slot pose. Layout IPC stays open during XR via `LayoutSession`
+  (thread-owned socket → `GroupChanged` re-pose/remesh; `send_group_grab` / `set_radius` /
+  `reanchor`). No host-mirror `app_id` branches, no `FLATLAND_CURVE_*`.
   Without `SDXR_PROTECTED_PANEL`: `NoServer` dry run exit 0. With env set + sockets present:
   enters `run` (needs a real oneshot provider + live server — headset). Workspace
   `[patch.crates-io] stardust-xr-asteroids` unifies git asteroids with panels-asteroids.
@@ -283,9 +285,14 @@ Implemented and unit-tested without a headset (`cargo test -p cylinder-shell`, *
    and then miss the arc → no motion sent). *Where* it lands is now the true arc UV.
 7. Workspace patches crates.io `stardust-xr-asteroids` to the same git rev desk-toys use so
    `PanelItemAcceptor: Component` typechecks against the worker's asteroids.
-8. Group grab / bead handle on the worker: **skipped.** The worker drops its layout socket
-   before `asteroids::run`, so there is no live channel for `GroupGrab` from XR; wiring it
-   needs the layout client kept on a tokio task plus `GroupChanged` → re-pose. Next step.
+8. Group grab / bead handle on the worker: **partially resolved.** The worker no longer drops
+   the layout socket before `asteroids::run`. `LayoutSession` owns the Unix stream on a
+   background thread for the XR lifetime; `on_start` pumps `GroupChanged` →
+   `apply_slot` / re-pose / remesh; `LayoutRequestSender` can send `GroupGrab` /
+   `SetRadius` / `Reanchor`. Unit-tested (`layout_session_forwards_group_grab_and_applies`,
+   `apply_layout_event_xr_reposes_and_tracks_radius`). **Still headset:** the visual bead
+   under the gap (Spatial + Lines/Model + Grabbable → `send_group_grab`) is not drawn yet —
+   see gap 3.
 
 ### Open (headset)
 

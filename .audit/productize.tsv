@@ -35,3 +35,6 @@ ts	actor	decision	detail
 2026-11-04 21:51:56 PST	roadie	gap	headset_pointer_uv	verify cursor lands on seen texel, u direction vs GLB texcoord, concave face; touch_* + child surfaces unrouted; do not -p	design gaps 1,7,8	open
 2026-11-04 21:51:56 PST	roadie	skip	live_session	no restart, no -p swap, no bootstrap prefix change	-	ok
 2026-11-04 21:54:31 PST	roadie	fix	uv_convention	mesh TEXCOORD_0 now u=t (+X->u=1) matching mesh_local_point_to_uv/pointer; test mesh_texcoords_match_hit_test_uv fails on old 1-t; headset must still confirm not mirrored	bace1a7	ok
+2026-11-04 21:57:49 PST	roadie	layout_ipc_keepalive	LayoutSession thread owns socket during XR; GroupChanged→apply_slot/re-pose/remesh; GroupGrab/SetRadius/Reanchor sendable; visual bead still headset	cargo test -p cylinder-shell 32 ok; design deviation 8 partial	ok
+2026-11-04 21:57:49 PST	roadie	skip	live_session	no restart, no -p swap	-	ok
+2026-11-04 21:57:49 PST	roadie	gap	headset_group_bead	visual bead under gap + Grabbable→send_group_grab unverified; gap 3	design gap 3	open

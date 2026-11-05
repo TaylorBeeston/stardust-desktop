@@ -246,6 +246,146 @@ fn handle_worker(stream: UnixStream, shared: Arc<Mutex<Shared>>) -> io::Result<(
     result
 }
 
+
+/// Worker-side keep-alive for the layout Unix socket across the XR loop.
+///
+/// Owns `SocketLayoutClient` on a background thread so the connection stays open for
+/// the worker lifetime: incoming `GroupChanged`/`Shutdown` are pushed to an async
+/// channel, and `send` forwards `GroupGrab` / `SetRadius` / `Reanchor` / `Bye` /
+/// `MetricsChanged` without blocking the Asteroids frame.
+pub struct LayoutSession {
+    req_tx: std::sync::mpsc::Sender<LayoutRequest>,
+    ev_rx: tokio::sync::mpsc::UnboundedReceiver<LayoutEvent>,
+    /// Slot id from the initial `Assigned`, if known — used to Bye on drop.
+    slot_id: Option<SlotId>,
+}
+
+impl LayoutSession {
+    /// Take ownership of an already-connected client (after `Hello`/`Assigned`).
+    pub fn take_over(client: SocketLayoutClient, slot_id: Option<SlotId>) -> Self {
+        let (req_tx, req_rx) = std::sync::mpsc::channel::<LayoutRequest>();
+        let (ev_tx, ev_rx) = tokio::sync::mpsc::unbounded_channel();
+        std::thread::Builder::new()
+            .name("cylinder-layout-ipc".into())
+            .spawn(move || layout_session_loop(client, req_rx, ev_tx))
+            .expect("spawn layout ipc thread");
+        Self { req_tx, ev_rx, slot_id }
+    }
+
+    pub fn slot_id(&self) -> Option<SlotId> {
+        self.slot_id
+    }
+
+    pub fn set_slot_id(&mut self, id: SlotId) {
+        self.slot_id = Some(id);
+    }
+
+    /// Non-blocking send onto the background thread (socket write happens there).
+    pub fn send(&self, req: LayoutRequest) -> Result<(), LayoutSessionClosed> {
+        self.req_tx.send(req).map_err(|_| LayoutSessionClosed)
+    }
+
+    /// Wait for the next event from the daemon (or `None` if the session ended).
+    pub async fn recv(&mut self) -> Option<LayoutEvent> {
+        self.ev_rx.recv().await
+    }
+
+    /// Cloneable request sender for XR callbacks (bead grab, recenter, …).
+    pub fn request_sender(&self) -> LayoutRequestSender {
+        LayoutRequestSender(self.req_tx.clone())
+    }
+}
+
+impl Drop for LayoutSession {
+    fn drop(&mut self) {
+        if let Some(id) = self.slot_id.take() {
+            let _ = self.req_tx.send(LayoutRequest::Bye { id });
+        }
+    }
+}
+
+/// Cheap cloneable handle for sending layout requests from XR input callbacks.
+#[derive(Debug, Clone)]
+pub struct LayoutRequestSender(std::sync::mpsc::Sender<LayoutRequest>);
+
+impl LayoutRequestSender {
+    pub fn send(&self, req: LayoutRequest) -> Result<(), LayoutSessionClosed> {
+        self.0.send(req).map_err(|_| LayoutSessionClosed)
+    }
+
+    pub fn group_grab(&self, delta_yaw: f32, delta_height: f32) -> Result<(), LayoutSessionClosed> {
+        self.send(LayoutRequest::GroupGrab { delta_yaw, delta_height })
+    }
+
+    pub fn set_radius(&self, radius_m: f32) -> Result<(), LayoutSessionClosed> {
+        self.send(LayoutRequest::SetRadius { radius_m })
+    }
+
+    pub fn reanchor(&self, hmd_yaw: f32, hmd_height: f32) -> Result<(), LayoutSessionClosed> {
+        self.send(LayoutRequest::Reanchor { hmd_yaw, hmd_height })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LayoutSessionClosed;
+
+impl std::fmt::Display for LayoutSessionClosed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("layout session closed")
+    }
+}
+
+impl std::error::Error for LayoutSessionClosed {}
+
+fn layout_session_loop(
+    mut client: SocketLayoutClient,
+    req_rx: std::sync::mpsc::Receiver<LayoutRequest>,
+    ev_tx: tokio::sync::mpsc::UnboundedSender<LayoutEvent>,
+) {
+    loop {
+        match client.try_recv() {
+            Ok(Some(ev)) => {
+                let shutdown = matches!(ev, LayoutEvent::Shutdown);
+                if ev_tx.send(ev).is_err() {
+                    break;
+                }
+                if shutdown {
+                    break;
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::debug!(%e, "layout session recv ended");
+                break;
+            }
+        }
+        match req_rx.recv_timeout(Duration::from_millis(2)) {
+            Ok(req) => {
+                if let Err(e) = client.send(req) {
+                    tracing::debug!(%e, "layout session send failed");
+                    break;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+}
+
+/// Apply a layout event to worker bookkeeping. Returns the new placement when the
+/// panel should re-pose (Assigned / GroupChanged). Pure — unit-tested without XR.
+pub fn apply_layout_event(
+    worker: &mut crate::panel::PanelWorker,
+    ev: &LayoutEvent,
+) -> Option<crate::panel::SlotPlacement> {
+    match ev {
+        LayoutEvent::Assigned { slot, group } | LayoutEvent::GroupChanged { slot, group } => {
+            Some(worker.apply_slot(slot.clone(), group))
+        }
+        LayoutEvent::Shutdown => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -345,5 +485,52 @@ mod tests {
         let stale = dir.path().join("layout.sock");
         drop(UnixListener::bind(&stale).unwrap()); // leaves a dead socket file
         assert!(LayoutDaemon::bind(&stale, CylinderState::default()).is_ok());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn layout_session_forwards_group_grab_and_applies() {
+        use crate::panel::PanelWorker;
+        let (_dir, path) = start();
+        let mut c = SocketLayoutClient::connect_to(&path).unwrap();
+        c.send(LayoutRequest::Hello { metrics: metrics(1000, "sess") }).unwrap();
+        let (slot, group) = assigned(&mut c);
+        let mut session = LayoutSession::take_over(c, Some(slot.id));
+        let mut worker = PanelWorker::new(metrics(1000, "sess"));
+        let p0 = apply_layout_event(
+            &mut worker,
+            &LayoutEvent::Assigned { slot: slot.clone(), group: group.clone() },
+        )
+        .unwrap();
+        assert!((p0.position.y - group.height_m).abs() < 1e-6);
+
+        session
+            .send(LayoutRequest::GroupGrab { delta_yaw: 0.3, delta_height: 0.05 })
+            .unwrap();
+        let ev = session.recv().await.expect("GroupChanged");
+        let p1 = apply_layout_event(&mut worker, &ev).expect("placement");
+        match ev {
+            LayoutEvent::GroupChanged { group: g, .. } => {
+                assert!((g.yaw_rad - 0.3).abs() < 1e-6);
+                assert!((g.height_m - 0.05).abs() < 1e-6);
+                assert!((p1.position.y - 0.05).abs() < 1e-6);
+            }
+            other => panic!("expected GroupChanged, got {other:?}"),
+        }
+
+        session.request_sender().set_radius(1.25).unwrap();
+        let ev = session.recv().await.expect("radius GroupChanged");
+        let _ = apply_layout_event(&mut worker, &ev).unwrap();
+        match ev {
+            LayoutEvent::GroupChanged { group: g, .. } => assert_eq!(g.radius_m, 1.25),
+            other => panic!("expected GroupChanged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_layout_event_ignores_shutdown() {
+        use crate::panel::PanelWorker;
+        let mut worker = PanelWorker::new(metrics(800, "x"));
+        assert!(apply_layout_event(&mut worker, &LayoutEvent::Shutdown).is_none());
+        assert!(worker.placement.is_none());
     }
 }

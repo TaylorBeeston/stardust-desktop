@@ -138,7 +138,7 @@ mod tests {
             let (x, z) = (rd(0), rd(2));
             assert!((x * x + (z + r) * (z + r) - r * r).abs() < 1e-4);
         }
-        // cache hit returns same path (checked below)
+        // cache quantizes inputs: nearby sizes reuse the same path
         assert_eq!(bake_curved_panel_glb_in(dir.path(), 0.641, 0.36, 0.70).unwrap(), p);
     }
 

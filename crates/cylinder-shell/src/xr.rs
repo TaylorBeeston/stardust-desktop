@@ -11,6 +11,8 @@
 use crate::curved_pointer::CurvedPointerPlane;
 use crate::field_shape::field_shape_for_slice;
 use crate::hit_test::CylinderSliceHitTest;
+use crate::layout_ipc::{apply_layout_event, LayoutEvent, LayoutRequestSender, LayoutSession};
+use crate::mesh::bake_curved_panel_glb;
 use crate::pointer_uv::uv_to_surface_px;
 use crate::panel::{PanelWorker, SlotPlacement};
 use crate::PanelMetrics;
@@ -29,7 +31,7 @@ use stardust_xr_panels_asteroids::{
     surface_model::SurfaceModel,
 };
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 /// Values `main` stashes before `run` so `initial_state_update` can pose the panel.
 #[derive(Debug, Clone)]
@@ -41,14 +43,24 @@ pub struct PendingLaunch {
 }
 
 static PENDING: OnceLock<PendingLaunch> = OnceLock::new();
+static LAYOUT: Mutex<Option<LayoutSession>> = Mutex::new(None);
 
 /// Install launch context for the next `run::<CylinderShell>`. Panics if called twice.
 pub fn install_pending(pending: PendingLaunch) {
     PENDING.set(pending).expect("PendingLaunch already installed");
 }
 
+/// Hand the live layout socket to the XR client (kept open for GroupChanged / GroupGrab).
+pub fn install_layout_session(session: LayoutSession) {
+    *LAYOUT.lock().expect("layout mutex") = Some(session);
+}
+
 fn take_pending() -> Option<&'static PendingLaunch> {
     PENDING.get()
+}
+
+fn take_layout_session() -> Option<LayoutSession> {
+    LAYOUT.lock().expect("layout mutex").take()
 }
 
 fn pose_from_placement(p: &SlotPlacement) -> Posef {
@@ -70,6 +82,9 @@ pub struct CylinderShell {
     shell: Option<Node<PanelShellHandler>>,
     #[serde(skip)]
     worker: PanelWorker,
+    /// Sends GroupGrab / SetRadius / Reanchor while the layout thread owns the socket.
+    #[serde(skip)]
+    layout_tx: Option<LayoutRequestSender>,
 }
 
 impl Default for CylinderShell {
@@ -88,6 +103,7 @@ impl Default for CylinderShell {
                 app_id: None,
                 title: None,
             }),
+            layout_tx: None,
         }
     }
 }
@@ -118,6 +134,16 @@ impl ClientState for CylinderShell {
             pos = ?self.pose.position,
             "CylinderShell pending launch applied"
         );
+    }
+
+    fn on_start(&mut self, _context: &Context, tasks: impl Tasker<Self>) {
+        let Some(session) = take_layout_session() else {
+            tracing::info!("CylinderShell: no layout session (daemon absent or NoServer path)");
+            return;
+        };
+        self.layout_tx = Some(session.request_sender());
+        tracing::info!(slot = ?session.slot_id(), "layout IPC kept open for XR lifetime");
+        Self::pump_layout(tasks, session);
     }
 }
 
@@ -213,6 +239,91 @@ impl CylinderShell {
             .build(),
         )
     }
+
+    /// Recursively await layout events and re-pose / remesh on `GroupChanged`.
+    fn pump_layout(tasks: impl Tasker<Self>, mut session: LayoutSession) {
+        tasks.spawn(
+            async move {
+                let ev = session.recv().await;
+                (session, ev)
+            },
+            |tasks, state, (session, ev)| {
+                let Some(ev) = ev else {
+                    tracing::info!("layout IPC ended");
+                    state.layout_tx = None;
+                    return;
+                };
+                state.apply_layout_event_xr(ev);
+                Self::pump_layout(tasks, session);
+            },
+        );
+    }
+
+    /// Apply a daemon event to pose / metrics / mesh. Public for unit tests.
+    pub fn apply_layout_event_xr(&mut self, ev: LayoutEvent) {
+        let Some(placement) = apply_layout_event(&mut self.worker, &ev) else {
+            tracing::info!("layout Shutdown");
+            return;
+        };
+        let (slot, group) = match &ev {
+            LayoutEvent::Assigned { slot, group } | LayoutEvent::GroupChanged { slot, group } => {
+                (slot, group)
+            }
+            LayoutEvent::Shutdown => return,
+        };
+        let old_r = self.radius_m;
+        let old_w = self.width_m;
+        let old_h = self.height_m;
+        self.pose = pose_from_placement(&placement);
+        self.width_m = placement.hit_test.width_m;
+        self.height_m = placement.hit_test.height_m;
+        self.radius_m = group.radius_m;
+        let geom_changed = (old_r - self.radius_m).abs() > 1e-4
+            || (old_w - self.width_m).abs() > 1e-4
+            || (old_h - self.height_m).abs() > 1e-4;
+        if geom_changed {
+            match bake_curved_panel_glb(self.width_m, self.height_m, self.radius_m) {
+                Ok(path) => {
+                    tracing::info!(?path, id = slot.id.0, "rebaked mesh after layout update");
+                    self.mesh_path = Some(path.to_string_lossy().into_owned());
+                }
+                Err(e) => tracing::error!(%e, "mesh rebake failed after layout update"),
+            }
+        }
+        tracing::info!(
+            id = slot.id.0,
+            yaw = group.yaw_rad,
+            height = group.height_m,
+            radius = group.radius_m,
+            pos = ?self.pose.position,
+            "applied layout GroupChanged"
+        );
+    }
+
+    /// XR / bead path: request a group yaw/height delta (no-op if layout session gone).
+    pub fn send_group_grab(&self, delta_yaw: f32, delta_height: f32) {
+        if let Some(tx) = &self.layout_tx {
+            if let Err(e) = tx.group_grab(delta_yaw, delta_height) {
+                tracing::warn!(%e, "GroupGrab send failed");
+            }
+        }
+    }
+
+    pub fn send_set_radius(&self, radius_m: f32) {
+        if let Some(tx) = &self.layout_tx {
+            if let Err(e) = tx.set_radius(radius_m) {
+                tracing::warn!(%e, "SetRadius send failed");
+            }
+        }
+    }
+
+    pub fn send_reanchor(&self, hmd_yaw: f32, hmd_height: f32) {
+        if let Some(tx) = &self.layout_tx {
+            if let Err(e) = tx.reanchor(hmd_yaw, hmd_height) {
+                tracing::warn!(%e, "Reanchor send failed");
+            }
+        }
+    }
 }
 
 /// Re-export placement helpers used when building [`PendingLaunch`].
@@ -220,5 +331,49 @@ pub fn placement_pose_parts(position: Vec3, rotation: Quat) -> Posef {
     Posef {
         position: position.into(),
         orientation: rotation.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cylinder::{CylinderState, PanelMetrics};
+    use crate::layout_ipc::LayoutEvent;
+
+    fn metrics() -> PanelMetrics {
+        PanelMetrics {
+            size_px: (1280, 720),
+            density_px_per_m: 2000.0,
+            app_id: Some("test".into()),
+            title: None,
+        }
+    }
+
+    #[test]
+    fn apply_layout_event_xr_reposes_and_tracks_radius() {
+        let mut g = CylinderState::default();
+        let slot = g.assign_slot(&metrics());
+        let mut shell = CylinderShell::default();
+        shell.worker = PanelWorker::new(metrics());
+        shell.apply_layout_event_xr(LayoutEvent::Assigned {
+            slot: slot.clone(),
+            group: g.clone(),
+        });
+        assert!((shell.radius_m - 0.7).abs() < 1e-6);
+        let y0 = f32::from(shell.pose.position.y);
+
+        g.apply_group_grab(0.4, 0.12);
+        g.set_radius(1.1);
+        let slot2 = g.slot(slot.id).unwrap().clone();
+        shell.apply_layout_event_xr(LayoutEvent::GroupChanged {
+            slot: slot2,
+            group: g.clone(),
+        });
+        let y1 = f32::from(shell.pose.position.y);
+        assert!((y1 - 0.12).abs() < 1e-5);
+        assert!((shell.radius_m - 1.1).abs() < 1e-6);
+        assert!((y1 - y0 - 0.12).abs() < 1e-4);
+        assert!(shell.mesh_path.is_some(), "rebake after radius change");
+        assert!(shell.worker.placement.is_some());
     }
 }

@@ -18,7 +18,8 @@ pub use cylinder::{CylinderAnchor, CylinderState, PanelMetrics, PanelSlot, SlotI
 pub use field_shape::{field_shape_for_slice, slice_aabb_extents};
 pub use hit_test::{CurvedHitTest, CylinderSliceHitTest};
 pub use layout_ipc::{
-    default_socket_path, LayoutClient, LayoutDaemon, LayoutEvent, LayoutRequest, SocketLayoutClient,
+    apply_layout_event, default_socket_path, LayoutClient, LayoutDaemon, LayoutEvent,
+    LayoutRequest, LayoutRequestSender, LayoutSession, LayoutSessionClosed, SocketLayoutClient,
 };
 pub use mesh::{bake_curved_panel_glb, bake_curved_panel_glb_in};
 pub use pointer_uv::{mesh_local_point_hit, mesh_local_ray_hit, uv_to_surface_px, SliceHit};
@@ -26,7 +27,7 @@ pub use panel::{PanelWorker, SlotPlacement};
 pub use preflight::{
     parse_protected_panel_env, preflight_xr, provider_socket_path, server_socket_path, PreflightError,
 };
-pub use xr::{install_pending, CylinderShell, PendingLaunch};
+pub use xr::{install_layout_session, install_pending, CylinderShell, PendingLaunch};
 
 /// Scaffold-era error type. Narrow once IPC and XR paths exist.
 #[derive(Debug, thiserror::Error)]

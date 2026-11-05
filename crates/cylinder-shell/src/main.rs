@@ -5,8 +5,9 @@
 //! no live-session connect on bogus env), then Asteroids `run::<CylinderShell>`.
 
 use cylinder_shell::{
-    bake_curved_panel_glb, install_pending, preflight_xr, LayoutClient, LayoutEvent, LayoutRequest,
-    PanelMetrics, PanelWorker, PendingLaunch, SocketLayoutClient,
+    bake_curved_panel_glb, install_layout_session, install_pending, preflight_xr, LayoutClient,
+    LayoutEvent, LayoutRequest, LayoutSession, PanelMetrics, PanelWorker, PendingLaunch,
+    SocketLayoutClient,
 };
 use std::path::PathBuf;
 use std::time::Duration;
@@ -122,8 +123,12 @@ fn main() {
         radius_m,
     });
 
-    // Drop layout client before entering the XR loop (socket stays open otherwise).
-    drop(client);
+    // Keep the layout socket open for the XR lifetime so GroupChanged re-poses the
+    // panel and GroupGrab / SetRadius / Reanchor can be sent from XR.
+    if let Some(c) = client.take() {
+        let slot_id = worker.slot.as_ref().map(|s| s.id);
+        install_layout_session(LayoutSession::take_over(c, slot_id));
+    }
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
