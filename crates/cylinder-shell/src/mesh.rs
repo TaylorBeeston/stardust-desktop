@@ -209,4 +209,25 @@ mod tests {
         }
     }
 
+    #[test]
+    fn rounded_glb_and_overlay_share_the_same_surface() {
+        let dir = tempfile::tempdir().unwrap();
+        let h = rendered_slice(0.42666668, 0.24, 0.45);
+        let path = bake_curved_panel_glb_in(dir.path(), 0.42666668, 0.24, 0.45).unwrap();
+        let bytes = std::fs::read(path).unwrap();
+        let json_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let json: serde_json::Value = serde_json::from_slice(&bytes[20..20 + json_len]).unwrap();
+        let bin = &bytes[28 + json_len..];
+        let read = |offset: usize| f32::from_le_bytes(bin[offset..offset + 4].try_into().unwrap());
+        let uv_offset = json["bufferViews"][1]["byteOffset"].as_u64().unwrap() as usize;
+        let count = json["accessors"][0]["count"].as_u64().unwrap() as usize;
+        for vertex in 0..count {
+            let p = glam::Vec3::new(read(vertex * 12), read(vertex * 12 + 4), read(vertex * 12 + 8));
+            let uv = (read(uv_offset + vertex * 8), read(uv_offset + vertex * 8 + 4));
+            let overlay = glam::Vec3::from(h.surface_point(uv.0, uv.1, crate::pointer_uv::OVERLAY_INSET_M));
+            let normal = glam::Vec3::new(-p.x, 0.0, h.radius_m - p.z).normalize();
+            assert!((overlay - (p + normal * crate::pointer_uv::OVERLAY_INSET_M)).length() < 1e-5);
+        }
+    }
+
 }
