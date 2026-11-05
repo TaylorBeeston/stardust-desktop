@@ -29,3 +29,8 @@ ts	actor	decision	detail
 2026-11-04 21:46:01 PST	roadie	field_shape	Fusion no cylinder-slice SDF → Shape::Box chord AABB; mesh_local_point_to_uv ready, PointerPlane remap unwired (headset gap 1)	field_shape.rs + hit_test inherent method; design.md documented	ok
 2026-11-04 21:46:01 PST	roadie	gap	headset_concave_and_hit_test	concave face vs SlotPlacement; curved pointer UV on mesh; do not -p until validated	design Open + gaps 1-8	open
 2026-11-04 21:46:01 PST	roadie	skip	live_session	did not change stardust_panel_shell or restart; preflight blocks connect without both sockets	pgrep still flatland -d + stardust_panel_shell	ok
+2026-11-04 21:51:56 PST	roadie	pointer_uv	CurvedPointerPlane: InputQueue on padded chord-AABB Field; pointer ray→mesh_local_ray_hit, hand/tip→mesh_local_point_hit → px → pointer_motion/button/scroll_discrete (Toplevel)	3629edb; cargo test -p cylinder-shell 28 ok; cargo check --workspace ok; NoServer smoke exit 0	ok
+2026-11-04 21:51:56 PST	roadie	field_shape	Field still chord AABB Box (no Fusion cylinder SDF); gates capture only, UV from arc	design deviation 6	ok
+2026-11-04 21:51:56 PST	roadie	skip	group_grab_worker	worker drops layout socket before asteroids::run; needs persistent client task + GroupChanged re-pose	design deviation 8	skipped
+2026-11-04 21:51:56 PST	roadie	gap	headset_pointer_uv	verify cursor lands on seen texel, u direction vs GLB texcoord, concave face; touch_* + child surfaces unrouted; do not -p	design gaps 1,7,8	open
+2026-11-04 21:51:56 PST	roadie	skip	live_session	no restart, no -p swap, no bootstrap prefix change	-	ok
