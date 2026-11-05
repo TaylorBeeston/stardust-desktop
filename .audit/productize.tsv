@@ -38,3 +38,4 @@ ts	actor	decision	detail
 2026-11-04 21:57:49 PST	roadie	layout_ipc_keepalive	LayoutSession thread owns socket during XR; GroupChanged→apply_slot/re-pose/remesh; GroupGrab/SetRadius/Reanchor sendable; visual bead still headset	cargo test -p cylinder-shell 32 ok; design deviation 8 partial	ok
 2026-11-04 21:57:49 PST	roadie	skip	live_session	no restart, no -p swap	-	ok
 2026-11-04 21:57:49 PST	roadie	gap	headset_group_bead	visual bead under gap + Grabbable→send_group_grab unverified; gap 3	design gap 3	open
+2026-11-04 21:58:03 PST	roadie	push_main	layout IPC keep-alive + deviation 8 partial	bfbe1b4; cargo test -p cylinder-shell 32 ok	pushed
