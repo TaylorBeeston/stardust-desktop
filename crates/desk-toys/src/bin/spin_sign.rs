@@ -2,7 +2,7 @@
 //! with a pointer) and it spins on its post, slowing down and settling on a face.
 
 use desk_toys::{
-    env_pos, identity_rot, inertia::Inertia, init_tracing,
+    env_pos, identity_rot, inertia::{self, Inertia}, init_tracing, pose_predict_dt,
     touch::{Touch, TouchFrame},
     upright,
 };
@@ -37,6 +37,8 @@ pub struct Spin {
     /// accumulated angle toward the next full turn
     acc: f32,
     pub spins: u32,
+    /// `Context::time()` when `angle`/`omega` were last integrated
+    sim_t: f32,
 }
 
 impl Spin {
@@ -80,6 +82,11 @@ impl Spin {
         if self.omega.abs() < 0.02 && (2.0 * self.angle).sin().abs() < 0.01 {
             self.omega = 0.0;
         }
+    }
+
+    /// Pose-predicted board angle for display (coasts with current omega).
+    pub fn display_angle(&self, predict_dt: f32) -> f32 {
+        inertia::coast(self.angle, self.omega, predict_dt).rem_euclid(TAU)
     }
 
     fn to_board(&self, p: Vec3) -> Vec3 {
@@ -185,20 +192,23 @@ fn on_frame(state: &mut State, frame: &TouchFrame) {
     if !frame.grabbed && (spin.touch(frame) | spin.poke(frame)) {
         info!(omega = spin.omega, "slapped");
     }
+    // Integrate with FrameInfo.delta, then stamp sim time for declarative pose predict.
     spin.step(frame.dt);
+    spin.sim_t = frame.display_t;
     if spin.spins != before && spin.spins % 10 == 0 {
         info!(spins = spin.spins, "spin milestone");
     }
 }
 
 impl Reify for State {
-    fn reify(&self, _context: &Context, _tasks: impl Tasker<Self>, _props: ()) -> impl Element<Self> {
+    fn reify(&self, context: &Context, _tasks: impl Tasker<Self>, _props: ()) -> impl Element<Self> {
         let top = CENTER_Y + BOARD_R + 0.01;
         let field = Shape::Transform {
             shape: Box::new(Shape::Cylinder { length: top, radius: BOARD_R + 0.01 }),
             transform: Mat4::from_translation(Vec3::Y * top / 2.0).into(),
         };
         let spins = self.spin.spins;
+        let angle = self.spin.display_angle(pose_predict_dt(context, self.spin.sim_t));
         Entity::new(field)
             .pos(self.pos)
             .rot(self.rot)
@@ -217,7 +227,7 @@ impl Reify for State {
             .child(
                 Spatial::default()
                     .pos([0.0, CENTER_Y, 0.0])
-                    .rot(Quat::from_rotation_y(self.spin.angle))
+                    .rot(Quat::from_rotation_y(angle))
                     .build()
                     .child(Model::namespaced("io.github.TaylorBeeston.DeskToys", "sign_board").build()),
             )
@@ -323,5 +333,44 @@ mod tests {
         let mut s = Spin::default();
         s.touch(&slap(-0.04, -2.5));
         assert!(s.omega < -30.0);
+    }
+
+    /// Integrating the same elapsed time at 30Hz vs 90Hz must land near the same angle.
+    #[test]
+    fn spin_step_is_frame_rate_independent() {
+        let run = |hz: f32| {
+            let mut s = Spin::default();
+            s.omega = 12.0;
+            let total = 0.25_f32;
+            let n = (total * hz).round() as u32;
+            let dt = total / n as f32;
+            for _ in 0..n {
+                s.step(dt);
+            }
+            (s.angle, s.omega)
+        };
+        let (a30, w30) = run(30.0);
+        let (a90, w90) = run(90.0);
+        let (a144, w144) = run(144.0);
+        // angles are rem_euclid; compare wrapped
+        let wrap = |a: f32, b: f32| {
+            let d = (a - b + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+            d.abs()
+        };
+        let d_30_90 = wrap(a30, a90);
+        let d_90_144 = wrap(a90, a144);
+        println!("angles 30/90/144: {a30} {a90} {a144}; wrap Δ {d_30_90} {d_90_144}; ω {w30} {w90} {w144}");
+        assert!(d_30_90 < 0.05, "30 vs 90 angle drift {d_30_90}");
+        assert!(d_90_144 < 0.05, "90 vs 144 angle drift {d_90_144}");
+        assert!((w30 - w90).abs() < 0.5, "30 vs 90 omega drift {}", (w30 - w90).abs());
+    }
+
+    #[test]
+    fn display_angle_coasts_with_omega() {
+        let mut s = Spin::default();
+        s.angle = 1.0;
+        s.omega = 2.0;
+        let shown = s.display_angle(0.01);
+        assert!((shown - 1.02).abs() < 1e-5, "shown {shown}");
     }
 }
