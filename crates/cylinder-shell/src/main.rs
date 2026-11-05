@@ -23,6 +23,21 @@ fn runtime_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/tmp"))
 }
 
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let to = dst.join(entry.file_name());
+        let ft = entry.file_type()?;
+        if ft.is_dir() {
+            copy_dir_recursive(&entry.path(), &to)?;
+        } else if ft.is_file() {
+            std::fs::copy(entry.path(), to)?;
+        }
+    }
+    Ok(())
+}
+
 fn main() {
     tracing_subscriber::fmt()
         .compact()
@@ -134,6 +149,20 @@ fn main() {
         .enable_all()
         .build()
         .expect("tokio runtime");
+    
+    // APP_ID rename: copy old config once (never delete).
+    {
+        let old_id = "org.stardustxr.CylinderShell";
+        let new_id = "io.github.TaylorBeeston.CylinderShell";
+        if let Some(dirs) = directories::BaseDirs::new() {
+            let old = dirs.config_dir().join(old_id);
+            let new = dirs.config_dir().join(new_id);
+            if !new.exists() && old.exists() {
+                let _ = copy_dir_recursive(&old, &new);
+                tracing::info!(from=%old.display(), to=%new.display(), "migrated CylinderShell config");
+            }
+        }
+    }
     if let Err(e) = rt.block_on(stardust_xr_asteroids::client::run::<cylinder_shell::CylinderShell>(
         &[],
     )) {

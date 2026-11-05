@@ -148,7 +148,7 @@ impl Migrate for CylinderShell {
 }
 
 impl ClientState for CylinderShell {
-    const APP_ID: &'static str = "org.stardustxr.CylinderShell";
+    const APP_ID: &'static str = "io.github.TaylorBeeston.CylinderShell";
 
     fn initial_state_update(&mut self) {
         let Some(pending) = take_pending() else {

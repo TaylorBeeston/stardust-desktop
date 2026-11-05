@@ -33,3 +33,36 @@ pub fn init_tracing(default: &str) {
         )
         .init();
 }
+
+/// Copy `~/.config/<old_id>` → `~/.config/<new_id>` once (never deletes old).
+/// Used when renaming ClientState APP_ID / wrist-menu config dirs.
+pub fn migrate_app_config(old_id: &str, new_id: &str) {
+    let Some(dirs) = directories::BaseDirs::new() else {
+        return;
+    };
+    let old = dirs.config_dir().join(old_id);
+    let new = dirs.config_dir().join(new_id);
+    if new.exists() || !old.exists() {
+        return;
+    }
+    if let Err(e) = copy_dir_recursive(&old, &new) {
+        tracing::warn!(?e, from = %old.display(), to = %new.display(), "config migrate failed");
+    } else {
+        tracing::info!(from = %old.display(), to = %new.display(), "migrated app config (old kept)");
+    }
+}
+
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let to = dst.join(entry.file_name());
+        let ft = entry.file_type()?;
+        if ft.is_dir() {
+            copy_dir_recursive(&entry.path(), &to)?;
+        } else if ft.is_file() {
+            std::fs::copy(entry.path(), to)?;
+        }
+    }
+    Ok(())
+}

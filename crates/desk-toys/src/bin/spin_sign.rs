@@ -169,7 +169,7 @@ impl Migrate for State {
     type Old = State;
 }
 impl ClientState for State {
-    const APP_ID: &'static str = "org.stardustxr.SpinSign";
+    const APP_ID: &'static str = "io.github.TaylorBeeston.SpinSign";
     fn initial_state_update(&mut self) {
         if let Some(pos) = env_pos("SPIN_SIGN_POS") {
             self.pos = pos;
@@ -213,13 +213,13 @@ impl Reify for State {
             ))
             .build()
             // models from tools/gen_models.py: textured faces, gold rim, chrome post
-            .child(Model::namespaced("org.stardustxr.DeskToys", "sign_stand").build())
+            .child(Model::namespaced("io.github.TaylorBeeston.DeskToys", "sign_stand").build())
             .child(
                 Spatial::default()
                     .pos([0.0, CENTER_Y, 0.0])
                     .rot(Quat::from_rotation_y(self.spin.angle))
                     .build()
-                    .child(Model::namespaced("org.stardustxr.DeskToys", "sign_board").build()),
+                    .child(Model::namespaced("io.github.TaylorBeeston.DeskToys", "sign_board").build()),
             )
             .maybe_child((spins > 0).then(|| {
                 Text::new(format!("{spins}"))
@@ -235,6 +235,7 @@ impl Reify for State {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
+    desk_toys::migrate_app_config("org.stardustxr.SpinSign", "io.github.TaylorBeeston.SpinSign");
     init_tracing("spin_sign=info");
     stardust_xr_asteroids::client::run::<State>(&[&stardust_xr_fusion::project_local_resources!("data")])
         .await

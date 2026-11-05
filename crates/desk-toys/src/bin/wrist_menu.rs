@@ -6,7 +6,7 @@
 //! `STARDUST_STARTUP_TOKEN` (toys have no relocate IPC yet — place = respawn-at-head).
 //! New widgets spawn upright in front of you (offset relative to your head, yaw only).
 //!
-//! Items: `~/.config/org.stardustxr.WristMenu/items.txt` (written with defaults on first run):
+//! Items: `~/.config/io.github.TaylorBeeston.WristMenu/items.txt` (written with defaults on first run):
 //!     label | command | right,up,forward offset from your head [| kind]
 //! Optional `kind` is `toy` (default) or `widget` — reserved for a future toychest; ignored for
 //! behaviour today. What's on is remembered in `~/.local/state/wrist-menu/enabled` and restored
@@ -158,10 +158,11 @@ pub fn parse_items(text: &str) -> Vec<Item> {
 }
 
 fn config_dir() -> PathBuf {
+    desk_toys::migrate_app_config("org.stardustxr.WristMenu", "io.github.TaylorBeeston.WristMenu");
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap()).join(".config"))
-        .join("org.stardustxr.WristMenu")
+        .join("io.github.TaylorBeeston.WristMenu")
 }
 fn enabled_file() -> PathBuf {
     std::env::var_os("XDG_STATE_HOME")
@@ -327,7 +328,7 @@ impl State {
 }
 
 impl ClientState for State {
-    const APP_ID: &'static str = "org.stardustxr.WristMenu";
+    const APP_ID: &'static str = "io.github.TaylorBeeston.WristMenu";
 
     fn initial_state_update(&mut self) {
         self.items = load_items();
@@ -700,6 +701,7 @@ impl Reify for State {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
+    desk_toys::migrate_app_config("org.stardustxr.WristMenu", "io.github.TaylorBeeston.WristMenu");
     desk_toys::init_tracing("wrist_menu=info");
     stardust_xr_asteroids::client::run::<State>(&[]).await.unwrap();
 }

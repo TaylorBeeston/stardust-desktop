@@ -263,7 +263,7 @@ impl Migrate for State {
     type Old = State;
 }
 impl ClientState for State {
-    const APP_ID: &'static str = "org.stardustxr.NewtonsCradle";
+    const APP_ID: &'static str = "io.github.TaylorBeeston.NewtonsCradles";
     fn initial_state_update(&mut self) {
         if let Some(pos) = env_pos("CRADLE_POS") {
             self.pos = pos;
@@ -292,7 +292,7 @@ fn frame_rods() -> Vec<(Vec3, Vec3)> {
 
 fn rod(from: Vec3, to: Vec3) -> impl Element<State> {
     let len = from.distance(to);
-    Model::namespaced("org.stardustxr.DeskToys", "rod")
+    Model::namespaced("io.github.TaylorBeeston.DeskToys", "rod")
         .pos(from)
         .rot(Quat::from_rotation_arc(Vec3::Y, (to - from) / len))
         .scl([0.003, len, 0.003])
@@ -337,7 +337,7 @@ impl Reify for State {
             transform: Mat4::from_translation([0.0, PIVOT_Y / 2.0, 0.0].into()).into(),
         };
         let balls = (0..N).map(|i| {
-            Model::namespaced("org.stardustxr.DeskToys", "ball")
+            Model::namespaced("io.github.TaylorBeeston.DeskToys", "ball")
                 .pos(self.cradle.center(i))
                 .build()
         });
@@ -359,11 +359,11 @@ impl Reify for State {
                 Entity::new(play)
                     .component(Touch::new(on_frame))
                     .build()
-                    .child(Model::namespaced("org.stardustxr.DeskToys", "cradle_base").build())
+                    .child(Model::namespaced("io.github.TaylorBeeston.DeskToys", "cradle_base").build())
                     .children(frame_rods().into_iter().map(|(a, b)| rod(a, b)))
                     .children([-1.0, 1.0].into_iter().flat_map(|sx| {
                         [-BAR_Z, BAR_Z].map(|z| {
-                            Model::namespaced("org.stardustxr.DeskToys", "ball")
+                            Model::namespaced("io.github.TaylorBeeston.DeskToys", "ball")
                                 .pos([sx * WIDTH / 2.0, PIVOT_Y, z])
                                 .scl([0.4; 3])
                                 .build()
@@ -377,6 +377,7 @@ impl Reify for State {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
+    desk_toys::migrate_app_config("org.stardustxr.NewtonsCradle", "io.github.TaylorBeeston.NewtonsCradles");
     init_tracing("newtons_cradle=info");
     stardust_xr_asteroids::client::run::<State>(&[&stardust_xr_fusion::project_local_resources!("data")])
         .await
