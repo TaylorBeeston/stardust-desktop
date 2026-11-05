@@ -73,8 +73,9 @@ mod tests {
         let (s, c) = half.sin_cos();
         let x = h.radius_m * s;
         let z = -h.radius_m * (1.0 - c);
-        let uv = h.mesh_local_point_to_uv([x, h.height_m / 2.0, z]).unwrap();
-        assert!(uv.0 > 0.99 && uv.1 < 0.01, "{uv:?}");
+        // inset so exact-edge float noise cannot push u/v outside [0,1]
+        let uv = h.mesh_local_point_to_uv([x * 0.999, h.height_m / 2.0 * 0.999, z]).unwrap();
+        assert!(uv.0 < 0.01 && uv.1 < 0.01, "{uv:?}");
         assert!(h.mesh_local_point_to_uv([0.0, h.height_m, 0.0]).is_none());
     }
 

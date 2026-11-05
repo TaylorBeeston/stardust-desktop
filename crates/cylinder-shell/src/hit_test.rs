@@ -6,7 +6,7 @@
 
 /// Map a world-space ray onto panel surface coordinates.
 pub trait CurvedHitTest {
-    /// Returns normalized UV on the panel (u right, v down) if the ray hits the front face.
+    /// Returns normalized UV on the panel (u toward −X / concave-correct, v down) if the ray hits the front face.
     fn ray_to_surface_uv(&self, origin: [f32; 3], direction: [f32; 3]) -> Option<(f32, f32)>;
 
     fn uv_to_panel_px(&self, uv: (f32, f32), size_px: (u32, u32)) -> (f32, f32) {
@@ -57,7 +57,7 @@ impl CurvedHitTest for CylinderSliceHitTest {
             let phi = x.atan2(-z);
             let mut d = phi - self.yaw_rad;
             d = (d + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
-            let u = 0.5 + d * r / self.width_m;
+            let u = 0.5 - d * r / self.width_m;
             let v = 0.5 - y / self.height_m;
             if (0.0..=1.0).contains(&u) && (0.0..=1.0).contains(&v) {
                 return Some((u, v));
@@ -84,7 +84,7 @@ impl CylinderSliceHitTest {
         if phi.abs() > half * 1.0001 {
             return None;
         }
-        let u = 0.5 + phi * r / self.width_m;
+        let u = 0.5 - phi * r / self.width_m;
         let v = 0.5 - y / self.height_m;
         ((0.0..=1.0).contains(&u) && (0.0..=1.0).contains(&v)).then_some((u, v))
     }
@@ -121,11 +121,11 @@ mod tests {
         let az = p.yaw_rad + half * 0.999;
         let d = [p.radius_m * az.sin(), target_y, -p.radius_m * az.cos()];
         let uv = p.ray_to_surface_uv([0.0; 3], d).unwrap();
-        assert!(uv.0 > 0.998 && uv.1 < 0.002, "{uv:?}");
-        // a quarter in from the left, bottom quarter
+        assert!(uv.0 < 0.002 && uv.1 < 0.002, "{uv:?}");
+        // a quarter in from the left (−yaw), bottom quarter → u = 0.75 under 1−t convention
         let az = p.yaw_rad - half / 2.0;
         let d = [p.radius_m * az.sin(), -p.height_m / 4.0, -p.radius_m * az.cos()];
-        assert!(close(p.ray_to_surface_uv([0.0; 3], d).unwrap(), (0.25, 0.75)));
+        assert!(close(p.ray_to_surface_uv([0.0; 3], d).unwrap(), (0.75, 0.75)));
     }
 
     #[test]

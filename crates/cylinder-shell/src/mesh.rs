@@ -2,11 +2,10 @@
 //!
 //! Mesh frame matches Flatland's measured convention: panel centre at the origin, edges
 //! wrapping toward -Z around an axis at (0, 0, -radius). UV convention: **u increases toward
-//! +X** (−X edge u=0, +X edge u=1), +Y -> v=0 — the same convention as
-//! `CylinderSliceHitTest::mesh_local_point_to_uv` / pointer UV and Flatland's pointer input
-//! (`px = x + width/2`). Flatland's `curve.rs` bakes `1 - t` (inherited from panel.glb, whose
-//! flat mesh is re-oriented by a node rotation); we deliberately do not, so the rendered
-//! texel under a point is the texel the pointer reports. Double-sided. Pure std: runs headless.
+//! −X** (+X edge u=0, −X edge u=1), +Y -> v=0 — Flatland's `curve.rs` `1 − t` bake, which
+//! reads correctly on the **concave (inside)** face in the headset. The same convention is
+//! used by `CylinderSliceHitTest::mesh_local_point_to_uv` / pointer UV so the texel under a
+//! point is the texel the pointer reports. Double-sided. Pure std: runs headless.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -54,7 +53,7 @@ pub fn bake_curved_panel_glb_in(dir: &Path, width_m: f32, height_m: f32, radius_
         let (x, z) = (radius * s, -radius * (1.0 - c));
         for (y, v) in [(height / 2.0, 0.0f32), (-height / 2.0, 1.0)] {
             pos.extend([x, y, z]);
-            uv.extend([t, v]);
+            uv.extend([1.0 - t, v]);
             nrm.extend([s, 0.0, c]);
         }
     }

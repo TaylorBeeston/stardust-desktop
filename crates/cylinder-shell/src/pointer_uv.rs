@@ -10,7 +10,7 @@ use crate::hit_test::CylinderSliceHitTest;
 /// Where an input lands on the curved slice.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SliceHit {
-    /// Normalized panel UV (u right, v down), same convention as `ray_to_surface_uv`.
+    /// Normalized panel UV (u toward −X / concave-correct, v down), same as `ray_to_surface_uv`.
     pub uv: (f32, f32),
     /// Ray parameter (pointer) or signed radial offset from the surface (hand/tip; + = in
     /// front of the bulge, toward +Z).
@@ -95,21 +95,21 @@ mod tests {
         let front = [p[0] + d[0], p[1], p[2] + d[2]];
         let b = mesh_local_ray_hit(&h, front, [-d[0], 0.0, -d[2]]).unwrap();
         assert!(close(a.uv, b.uv), "{a:?} {b:?}");
-        assert!(close(a.uv, (0.8, 0.25)), "{a:?}");
+        assert!(close(a.uv, (0.2, 0.25)), "{a:?}");
     }
 
     #[test]
     fn curved_differs_from_flat_proxy_near_edges() {
         // A ray parallel to −Z at x near the chord edge: the flat proxy would report
-        // u = 0.5 + x / chord_width; the arc gives the true texel.
+        // flat proxy u = 0.5 + x / chord_width; arc uses 1−t so edge u≈0.05.
         let h = h();
         let p = vert(&h, 0.95, 0.0);
         let hit = mesh_local_ray_hit(&h, [p[0], 0.0, 1.0], [0.0, 0.0, -1.0]).unwrap();
-        assert!(close(hit.uv, (0.95, 0.5)), "{hit:?}");
+        assert!(close(hit.uv, (0.05, 0.5)), "{hit:?}");
         let (chord, _, _) = crate::field_shape::slice_aabb_extents(h.width_m, h.height_m, h.radius_m);
         let flat_u = 0.5 + p[0] / chord;
         // > 3 px off on a 1280-wide surface at r = 0.7 m — grows as radius shrinks.
-        assert!((flat_u - 0.95).abs() * 1280.0 > 3.0, "flat {flat_u}");
+        assert!((flat_u - 0.05).abs() * 1280.0 > 3.0, "flat {flat_u}");
     }
 
     #[test]
@@ -126,12 +126,12 @@ mod tests {
         let h = h();
         let p = vert(&h, 0.3, -0.1);
         let hit = mesh_local_point_hit(&h, p).unwrap();
-        assert!(close(hit.uv, (0.3, 0.75)) && hit.distance.abs() < 1e-5, "{hit:?}");
+        assert!(close(hit.uv, (0.7, 0.75)) && hit.distance.abs() < 1e-5, "{hit:?}");
         // 5 cm out along the normal: same UV, +0.05 offset
         let th = (0.3 - 0.5) * h.width_m / h.radius_m;
         let q = [p[0] + 0.05 * th.sin(), p[1], p[2] + 0.05 * th.cos()];
         let hit = mesh_local_point_hit(&h, q).unwrap();
-        assert!(close(hit.uv, (0.3, 0.75)) && (hit.distance - 0.05).abs() < 1e-5, "{hit:?}");
+        assert!(close(hit.uv, (0.7, 0.75)) && (hit.distance - 0.05).abs() < 1e-5, "{hit:?}");
     }
 
     #[test]
