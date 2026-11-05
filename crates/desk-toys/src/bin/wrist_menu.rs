@@ -1,11 +1,16 @@
 //! A watch-style menu on the back of your left wrist that turns little widgets and desk toys
-//! on and off. Tap the watch face to open it; tap a row to toggle that widget. New widgets spawn
-//! upright in front of you (their offset is relative to your head, yaw only).
+//! on and off, and can re-place a running toy in front of you.
+//!
+//! Tap the watch face to open it. Tap the left/center of a row to toggle that item. When it is
+//! on, tap the right **"here"** strip to kill+respawn it with a fresh head-relative
+//! `STARDUST_STARTUP_TOKEN` (toys have no relocate IPC yet — place = respawn-at-head).
+//! New widgets spawn upright in front of you (offset relative to your head, yaw only).
 //!
 //! Items: `~/.config/org.stardustxr.WristMenu/items.txt` (written with defaults on first run):
-//!     label | command | right,up,forward offset from your head
-//! What's on is remembered in `~/.local/state/wrist-menu/enabled` and restored at startup.
-//! Widgets that are already running (e.g. from startup.sh) are adopted, so toggling them off works.
+//!     label | command | right,up,forward offset from your head [| kind]
+//! Optional `kind` is `toy` (default) or `widget` — reserved for a future toychest; ignored for
+//! behaviour today. What's on is remembered in `~/.local/state/wrist-menu/enabled` and restored
+//! at startup. Widgets already running (e.g. from startup.sh) are adopted.
 
 use glam::{Quat, Vec3};
 use serde::{Deserialize, Serialize};
@@ -41,23 +46,88 @@ const FACE_R: f32 = 0.016;
 const AUTO_CLOSE: Duration = Duration::from_secs(12);
 
 const DEFAULT_ITEMS: &str = "\
-# Wrist menu items: label | command | spawn offset from your head (right, up, forward is -)
-Battery | battery-widget | 0.18,-0.2,-0.45
-Spin sign | spin-sign | -0.22,-0.3,-0.45
-Newton's cradle | newtons-cradle | 0.0,-0.32,-0.4
+# Wrist menu items: label | command | spawn offset from your head (right, up, forward is -) [| kind]
+# kind is optional: toy (default) or widget — for a future toychest; behaviour is the same today.
+Battery | battery-widget | 0.18,-0.2,-0.45 | widget
+Spin sign | spin-sign | -0.22,-0.3,-0.45 | toy
+Newton's cradle | newtons-cradle | 0.0,-0.32,-0.4 | toy
 ";
+
+/// Width of the right-hand "here" / place strip on an open row.
+const PLACE_STRIP: f32 = 0.022;
+
+/// Optional tag in `items.txt` for a future toychest (stash vs active). Behaviour is identical today.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ItemKind {
+    #[default]
+    Toy,
+    Widget,
+}
+
+impl ItemKind {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "" | "toy" => Some(Self::Toy),
+            "widget" => Some(Self::Widget),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Item {
     pub label: String,
     pub command: Vec<String>,
     pub offset: Vec3,
+    pub kind: ItemKind,
 }
 impl Item {
     /// process name we look for in /proc (argv[0] basename)
     fn exe(&self) -> &str {
         self.command[0].rsplit('/').next().unwrap()
     }
+}
+
+/// Menu / lifecycle request. `PlaceHere` is kill+respawn with a fresh head-relative token —
+/// desk toys do not expose relocate IPC yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Request {
+    Start(String),
+    Stop(String),
+    PlaceHere(String),
+}
+
+impl Request {
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Start(l) | Self::Stop(l) | Self::PlaceHere(l) => l,
+        }
+    }
+}
+
+/// Pure toggle decision used by the touch handler and unit-tested without Stardust.
+pub fn toggle_request(label: &str, running_or_starting: bool) -> Request {
+    if running_or_starting {
+        Request::Stop(label.to_string())
+    } else {
+        Request::Start(label.to_string())
+    }
+}
+
+/// Expand the queue for the frame processor: `PlaceHere` becomes stop then start so enabled-set
+/// persistence and /proc adoption stay consistent. Order is preserved.
+pub fn expand_requests(requests: impl IntoIterator<Item = Request>) -> Vec<Request> {
+    let mut out = Vec::new();
+    for r in requests {
+        match r {
+            Request::PlaceHere(label) => {
+                out.push(Request::Stop(label.clone()));
+                out.push(Request::Start(label));
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 pub fn parse_items(text: &str) -> Vec<Item> {
@@ -75,7 +145,14 @@ pub fn parse_items(text: &str) -> Vec<Item> {
                     (v.len() == 3).then(|| Vec3::new(v[0], v[1], v[2]))
                 })
                 .unwrap_or(Vec3::new(0.0, -0.25, -0.45));
-            (!label.is_empty() && !command.is_empty()).then_some(Item { label, command, offset })
+            // Optional 4th field: kind. Unknown values are ignored (stay Toy) so old files still load.
+            let kind = parts.next().and_then(ItemKind::parse).unwrap_or_default();
+            (!label.is_empty() && !command.is_empty()).then_some(Item {
+                label,
+                command,
+                offset,
+                kind,
+            })
         })
         .collect()
 }
@@ -191,7 +268,7 @@ struct State {
     #[serde(skip)]
     starting: HashMap<String, Instant>,
     #[serde(skip)]
-    requests: Vec<(String, bool)>,
+    requests: Vec<Request>,
     #[serde(skip)]
     open: bool,
     #[serde(skip)]
@@ -222,8 +299,19 @@ impl State {
     }
     fn toggle(&mut self, label: &str) {
         self.touch();
-        let on = !(self.running.contains(label) || self.starting.contains_key(label));
-        self.requests.push((label.to_string(), on));
+        let busy = self.running.contains(label) || self.starting.contains_key(label);
+        self.requests.push(toggle_request(label, busy));
+    }
+    /// Re-place a running (or starting) toy in front of the head via kill+respawn.
+    /// No-op if the item is off — use toggle/start first.
+    fn place_here(&mut self, label: &str) {
+        self.touch();
+        let busy = self.running.contains(label) || self.starting.contains_key(label);
+        if busy {
+            self.requests.push(Request::PlaceHere(label.to_string()));
+        } else {
+            self.requests.push(Request::Start(label.to_string()));
+        }
     }
     fn scan(&mut self) {
         self.running = self
@@ -258,7 +346,7 @@ impl ClientState for State {
                 for item in &self.items {
                     let want = enabled.as_ref().is_none_or(|e| e.contains(&item.label));
                     if want && !self.running.contains(&item.label) {
-                        self.requests.push((item.label.clone(), true));
+                        self.requests.push(Request::Start(item.label.clone()));
                     }
                 }
             }
@@ -266,28 +354,34 @@ impl ClientState for State {
         if self.open && !self.desk && self.last_touch.is_some_and(|t| t.elapsed() > AUTO_CLOSE) {
             self.open = false;
         }
-        let requests = std::mem::take(&mut self.requests);
+        let requests = expand_requests(std::mem::take(&mut self.requests));
         if requests.is_empty() {
             return;
         }
-        for (label, on) in requests {
+        for req in requests {
+            let label = req.label().to_string();
             let Some(item) = self.items.iter().find(|i| i.label == label).cloned() else { continue };
-            if on {
-                info!(item = %label, "starting");
-                self.starting.insert(label.clone(), Instant::now());
-                let client = context.stardust_client.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = spawn(client, item).await {
-                        warn!(item = %label, error = %e, "couldn't start");
-                    }
-                });
-            } else {
-                info!(item = %label, "stopping");
-                self.starting.remove(&label);
-                for pid in pids_of(item.exe()) {
-                    let _ = Command::new("kill").arg(pid.to_string()).status();
+            match req {
+                Request::Start(_) => {
+                    info!(item = %label, "starting");
+                    self.starting.insert(label.clone(), Instant::now());
+                    let client = context.stardust_client.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = spawn(client, item).await {
+                            warn!(item = %label, error = %e, "couldn't start");
+                        }
+                    });
                 }
-                self.running.remove(&label);
+                Request::Stop(_) => {
+                    info!(item = %label, "stopping");
+                    self.starting.remove(&label);
+                    for pid in pids_of(item.exe()) {
+                        let _ = Command::new("kill").arg(pid.to_string()).status();
+                    }
+                    self.running.remove(&label);
+                }
+                // PlaceHere is expanded away above.
+                Request::PlaceHere(_) => unreachable!("expand_requests flattens PlaceHere"),
             }
         }
         let mut wanted = self.running.clone();
@@ -322,7 +416,10 @@ fn dot(color: Color) -> Lines {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
     Face,
-    Row(usize),
+    /// Left/center of a row: toggle on/off.
+    RowToggle(usize),
+    /// Right strip of a row: place in front (respawn-at-head).
+    RowPlace(usize),
     Close,
 }
 
@@ -351,7 +448,13 @@ impl Layout {
             return None;
         }
         (0..=self.rows).find(|&i| (y - self.row_y(i)).abs() < ROW_H / 2.0).map(|i| {
-            if i == self.rows { Target::Close } else { Target::Row(i) }
+            if i == self.rows {
+                Target::Close
+            } else if x > ROW_W / 2.0 - PLACE_STRIP {
+                Target::RowPlace(i)
+            } else {
+                Target::RowToggle(i)
+            }
         })
     }
 }
@@ -404,9 +507,14 @@ fn on_touch(state: &mut State, frame: &TouchFrame) {
             state.touch();
         }
         Target::Close => state.open = false,
-        Target::Row(i) => {
+        Target::RowToggle(i) => {
             if let Some(label) = state.items.get(i).map(|i| i.label.clone()) {
                 state.toggle(&label);
+            }
+        }
+        Target::RowPlace(i) => {
+            if let Some(label) = state.items.get(i).map(|i| i.label.clone()) {
+                state.place_here(&label);
             }
         }
     }
@@ -454,26 +562,67 @@ impl State {
         let item_rows = self.items.iter().enumerate().map(|(i, item)| {
             let on = self.running.contains(&item.label);
             let starting = self.starting.contains_key(&item.label);
+            let status = if starting {
+                "…"
+            } else if on {
+                "ON"
+            } else {
+                "OFF"
+            };
+            // Right strip is the place/here target when the toy is up (or starting); still shown
+            // dim when off so the hit zone matches Layout::hit.
+            let place_label = if on || starting { "here" } else { "·" };
+            let place_color = if self.hovered == Some(Target::RowPlace(i)) {
+                BRIGHT
+            } else if on || starting {
+                rgba_linear!(0.55, 0.75, 1.0, 1.0)
+            } else {
+                DIM
+            };
             Spatial::default()
                 .pos([0.0, layout.row_y(i), 0.0])
                 .build()
-                .child(self.outline(Target::Row(i), rounded_rectangle(ROW_W, ROW_H * 0.86, 0.003, 3)).build())
+                .child(
+                    self.outline(
+                        Target::RowToggle(i),
+                        rounded_rectangle(ROW_W - PLACE_STRIP - 0.002, ROW_H * 0.86, 0.003, 3),
+                    )
+                    .pos([-(PLACE_STRIP + 0.002) / 2.0, 0.0, 0.0])
+                    .build(),
+                )
+                .child(
+                    self.outline(
+                        Target::RowPlace(i),
+                        rounded_rectangle(PLACE_STRIP - 0.002, ROW_H * 0.86, 0.002, 2),
+                    )
+                    .pos([(ROW_W - PLACE_STRIP) / 2.0, 0.0, 0.0])
+                    .build(),
+                )
                 .child(dot(status_color(on, starting)).pos([-ROW_W / 2.0 + 0.007, 0.0, 0.001]).build())
                 .child(
                     Text::new(&item.label)
-                        .character_height(0.0065)
+                        .character_height(0.006)
                         .align_x(XAlign::Left)
                         .align_y(YAlign::Center)
                         .pos([-ROW_W / 2.0 + 0.013, 0.0, 0.001])
                         .build(),
                 )
                 .child(
-                    Text::new(if starting { "…" } else if on { "ON" } else { "OFF" })
-                        .character_height(0.005)
+                    Text::new(status)
+                        .character_height(0.0045)
                         .color(status_color(on, starting))
                         .align_x(XAlign::Right)
                         .align_y(YAlign::Center)
-                        .pos([ROW_W / 2.0 - 0.004, 0.0, 0.001])
+                        .pos([ROW_W / 2.0 - PLACE_STRIP - 0.003, 0.0, 0.001])
+                        .build(),
+                )
+                .child(
+                    Text::new(place_label)
+                        .character_height(0.004)
+                        .color(place_color)
+                        .align_x(XAlign::Center)
+                        .align_y(YAlign::Center)
+                        .pos([(ROW_W - PLACE_STRIP) / 2.0, 0.0, 0.001])
                         .build(),
                 )
         });
@@ -563,9 +712,12 @@ mod tests {
     fn parses_default_items_and_skips_comments() {
         let items = parse_items(DEFAULT_ITEMS);
         assert_eq!(items.len(), 3);
+        assert_eq!(items[0].kind, ItemKind::Widget);
         assert_eq!(items[1].label, "Spin sign");
         assert_eq!(items[1].exe(), "spin-sign");
+        assert_eq!(items[1].kind, ItemKind::Toy);
         assert_eq!(items[2].offset, Vec3::new(0.0, -0.32, -0.4));
+        assert_eq!(items[2].kind, ItemKind::Toy);
     }
 
     fn tip(x: f32, y: f32, z: f32, vz: f32, left: Option<bool>) -> TouchFrame {
@@ -587,17 +739,44 @@ mod tests {
     fn poking_a_row_from_either_side_presses_it_but_the_wrist_hand_never_does() {
         let l = Layout { rows: 3 };
         let y = l.row_y(1);
-        // right index tip moving into the plane from the front
-        assert_eq!(pokes(&l, true, &tip(0.01, y, 0.004, -0.5, Some(false))).0, Some(Target::Row(1)));
+        // left/center of the row = toggle
+        assert_eq!(
+            pokes(&l, true, &tip(0.01, y, 0.004, -0.5, Some(false))).0,
+            Some(Target::RowToggle(1))
+        );
         // ...or from behind (mount flipped)
-        assert_eq!(pokes(&l, true, &tip(0.01, y, -0.004, 0.5, None)).0, Some(Target::Row(1)));
+        assert_eq!(
+            pokes(&l, true, &tip(0.01, y, -0.004, 0.5, None)).0,
+            Some(Target::RowToggle(1))
+        );
         // resting in the plane: hover, not a new press
-        assert_eq!(pokes(&l, true, &tip(0.01, y, 0.001, 0.0, None)), (None, Some(Target::Row(1))));
+        assert_eq!(
+            pokes(&l, true, &tip(0.01, y, 0.001, 0.0, None)),
+            (None, Some(Target::RowToggle(1)))
+        );
         // the left hand (the one wearing the menu) is ignored
         assert_eq!(pokes(&l, true, &tip(0.01, y, 0.004, -0.5, Some(true))).0, None);
         // last row is close; closed menu only has the face
-        assert_eq!(pokes(&l, true, &tip(0.0, l.row_y(3), 0.004, -0.5, None)).0, Some(Target::Close));
+        assert_eq!(
+            pokes(&l, true, &tip(0.0, l.row_y(3), 0.004, -0.5, None)).0,
+            Some(Target::Close)
+        );
         assert_eq!(pokes(&l, false, &tip(0.0, 0.0, 0.004, -0.5, None)).0, Some(Target::Face));
+    }
+
+    #[test]
+    fn right_strip_of_a_row_is_the_place_here_target() {
+        let l = Layout { rows: 2 };
+        let y = l.row_y(0);
+        let x_place = ROW_W / 2.0 - PLACE_STRIP / 2.0;
+        assert_eq!(l.hit(true, x_place, y), Some(Target::RowPlace(0)));
+        assert_eq!(
+            pokes(&l, true, &tip(x_place, y, 0.004, -0.5, None)).0,
+            Some(Target::RowPlace(0))
+        );
+        // just left of the strip stays toggle
+        let x_toggle = ROW_W / 2.0 - PLACE_STRIP - 0.002;
+        assert_eq!(l.hit(true, x_toggle, y), Some(Target::RowToggle(0)));
     }
 
     #[test]
@@ -611,6 +790,7 @@ mod tests {
         assert_eq!(items[1].offset, fallback); // not numbers
         assert_eq!(items[2].offset, Vec3::new(0.1, 0.2, -0.3));
         assert_eq!(items[2].command, vec!["d", "--x"]);
+        assert_eq!(items[2].kind, ItemKind::Toy);
     }
 
     #[test]
@@ -619,5 +799,56 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].command, vec!["/opt/bin/clock", "--big"]);
         assert_eq!(items[0].exe(), "clock");
+        assert_eq!(items[0].kind, ItemKind::Toy);
+    }
+
+    #[test]
+    fn optional_kind_tag_is_backward_compatible() {
+        let items = parse_items(
+            "A | a | 0,0,-1\nB | b | 0,0,-1 | widget\nC | c | 0,0,-1 | TOY\nD | d | 0,0,-1 | mystery\n",
+        );
+        assert_eq!(items[0].kind, ItemKind::Toy);
+        assert_eq!(items[1].kind, ItemKind::Widget);
+        assert_eq!(items[2].kind, ItemKind::Toy);
+        // unknown kind -> ignored, stays default Toy
+        assert_eq!(items[3].kind, ItemKind::Toy);
+    }
+
+    #[test]
+    fn toggle_request_flips_busy_state() {
+        assert_eq!(toggle_request("Spin", false), Request::Start("Spin".into()));
+        assert_eq!(toggle_request("Spin", true), Request::Stop("Spin".into()));
+    }
+
+    #[test]
+    fn place_here_expands_to_stop_then_start() {
+        let q = expand_requests([
+            Request::PlaceHere("Cradle".into()),
+            Request::Start("Battery".into()),
+            Request::Stop("Sign".into()),
+        ]);
+        assert_eq!(
+            q,
+            vec![
+                Request::Stop("Cradle".into()),
+                Request::Start("Cradle".into()),
+                Request::Start("Battery".into()),
+                Request::Stop("Sign".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn place_here_on_state_queues_respawn_when_busy_else_start() {
+        let mut state = State::default();
+        state.items = parse_items("Spin sign | spin-sign | 0,0,-1 | toy\n");
+        state.running.insert("Spin sign".into());
+        state.place_here("Spin sign");
+        assert_eq!(state.requests, vec![Request::PlaceHere("Spin sign".into())]);
+
+        state.requests.clear();
+        state.running.clear();
+        state.place_here("Spin sign");
+        assert_eq!(state.requests, vec![Request::Start("Spin sign".into())]);
     }
 }
