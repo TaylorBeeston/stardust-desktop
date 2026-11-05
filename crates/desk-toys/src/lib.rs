@@ -4,7 +4,13 @@ pub mod inertia;
 pub mod touch;
 
 use glam::{Quat, Vec3};
+use stardust_xr_asteroids::Context;
 use stardust_xr_fusion::types::{QuatF, Vec3F};
+
+/// Seconds to extrapolate a coasting pose for display (Nova: predict to predicted display time).
+pub fn pose_predict_dt(context: &Context, sim_t: f32) -> f32 {
+    inertia::pose_predict_dt(sim_t, context.time(), context.predicted_display_time())
+}
 
 /// `<PREFIX>_POS="x,y,z"` override for the spawn position (relative to the client root).
 pub fn env_pos(var: &str) -> Option<Vec3F> {

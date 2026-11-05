@@ -3,7 +3,47 @@
 //! differentiating twice) doesn't make the toy tremble while you just hold it.
 
 use glam::{Quat, Vec3};
+use stardust_xr_fusion::types::Timestamp;
 use std::f32::consts::{PI, TAU};
+
+/// Cap how far we extrapolate a coasting pose (seconds). Guards hitches / clock skew.
+pub const MAX_PREDICT: f32 = 1.0 / 30.0;
+
+#[inline]
+pub fn seconds_between(from: Timestamp, to: Timestamp) -> f32 {
+    (to.seconds - from.seconds) as f32 + (to.nanoseconds - from.nanoseconds) as f32 * 1e-9
+}
+
+#[inline]
+pub fn clamp_predict(dt: f32) -> f32 {
+    dt.clamp(0.0, MAX_PREDICT)
+}
+
+/// Coasting display: `x + v * dt` with predict clamp (no forces during the predict window).
+#[inline]
+pub fn coast(x: f32, v: f32, dt: f32) -> f32 {
+    x + v * clamp_predict(dt)
+}
+
+/// How far ahead to pose-predict after integrating with `FrameInfo.delta`.
+///
+/// Prefers the declarative gap `display_t - sim_t` (`Context::time()` minus the time the
+/// sim was stamped). When those match (same frame, right after step), falls back to
+/// wall-clock → `predicted_display_time` so the rendered pose lands when it is seen.
+pub fn pose_predict_dt(
+    sim_t: f32,
+    display_t: f32,
+    predicted_display_time: Option<Timestamp>,
+) -> f32 {
+    let declarative = display_t - sim_t;
+    if declarative > 1e-5 {
+        return clamp_predict(declarative);
+    }
+    let Some(pdt) = predicted_display_time else {
+        return 0.0;
+    };
+    clamp_predict(seconds_between(Timestamp::now(), pdt))
+}
 
 /// smoothing time constants for velocity and acceleration (s). Yaw is noisier (it comes
 /// straight from the hand's orientation), so it gets more.
@@ -135,5 +175,39 @@ mod tests {
         }
         println!("twist peak {peak} rad/s²");
         assert!(peak > 5.0, "twist too weak: {peak}");
+    }
+
+    /// Nova: velocity * real frame delta must not depend on the tick rate.
+    #[test]
+    fn velocity_times_delta_is_frame_rate_independent() {
+        let v = Vec3::new(1.2, -0.4, 0.7);
+        let total = 0.5_f32;
+        let run = |hz: f32| {
+            let n = (total * hz).round() as u32;
+            let dt = total / n as f32;
+            let mut p = Vec3::ZERO;
+            for _ in 0..n {
+                p += v * dt;
+            }
+            p
+        };
+        let a = run(30.0);
+        let b = run(90.0);
+        let c = run(144.0);
+        let ab = a.distance(b);
+        let bc = b.distance(c);
+        println!("coast 30 vs 90: {ab}, 90 vs 144: {bc}");
+        assert!(ab < 1e-5, "30Hz vs 90Hz drifted {ab}: {a} vs {b}");
+        assert!(bc < 1e-5, "90Hz vs 144Hz drifted {bc}: {b} vs {c}");
+    }
+
+    #[test]
+    fn pose_predict_prefers_declarative_display_gap() {
+        assert_eq!(pose_predict_dt(1.0, 1.0, None), 0.0);
+        let dt = pose_predict_dt(1.0, 1.02, None);
+        assert!((dt - 0.02).abs() < 1e-6, "dt {dt}");
+        assert!((coast(1.0, 2.0, 0.01) - 1.02).abs() < 1e-6);
+        // clamp
+        assert!((pose_predict_dt(0.0, 1.0, None) - MAX_PREDICT).abs() < 1e-6);
     }
 }

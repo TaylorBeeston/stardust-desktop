@@ -49,7 +49,10 @@ impl Ray {
 
 #[derive(Debug, Default)]
 pub struct TouchFrame {
+    /// `FrameInfo.delta` (XR: predicted display period) — integrate physics with this
     pub dt: f32,
+    /// `Context::time()` for this frame: seconds since first frame at predicted display time
+    pub display_t: f32,
     pub contacts: Vec<Contact>,
     pub rays: Vec<Ray>,
     /// a sibling Grabbable is moving the toy right now
@@ -99,14 +102,15 @@ impl<State: ValidState> Component<State> for Touch<State> {
 
     fn diff(&self, _: &Self, _: &Context, _: ComponentCreateInfo<'_>, _: &mut Inners<'_, State, Self>) {}
 
-    fn frame(&self, _: &Context, info: &FrameInfo, state: &mut State, inners: &mut Inners<'_, State, Self>) {
+    fn frame(&self, context: &Context, info: &FrameInfo, state: &mut State, inners: &mut Inners<'_, State, Self>) {
         let grabbed = inners
             .get::<Grabbable<State>>()
             .is_some_and(|g| g.grabbing());
         let inner = inners.self_inner();
         inner.input.handle_events();
         let dt = info.delta.clamp(1.0 / 500.0, 0.1);
-        let mut frame = TouchFrame { dt, grabbed, ..Default::default() };
+        let display_t = context.time();
+        let mut frame = TouchFrame { dt, display_t, grabbed, ..Default::default() };
         let mut seen = Vec::new();
 
         for (method, snap) in inner.input.input() {
