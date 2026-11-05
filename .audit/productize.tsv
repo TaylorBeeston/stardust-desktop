@@ -39,3 +39,4 @@ ts	actor	decision	detail
 2026-11-04 21:57:49 PST	roadie	skip	live_session	no restart, no -p swap	-	ok
 2026-11-04 21:57:49 PST	roadie	gap	headset_group_bead	visual bead under gap + Grabbable→send_group_grab unverified; gap 3	design gap 3	open
 2026-11-04 21:58:03 PST	roadie	push_main	layout IPC keep-alive + deviation 8 partial	bfbe1b4; cargo test -p cylinder-shell 32 ok	pushed
+2026-11-04 21:59:16 PST	roadie	cyl-group-grab	keep layout IPC open during XR via LayoutSession	GroupGrab needs socket alive after asteroids::run; prior drop closed it before XR	bfbe1b4 (audit 5952bc7)	32 tests green; deviation 8 partially resolved; visual bead still headset

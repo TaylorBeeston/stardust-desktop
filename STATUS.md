@@ -17,9 +17,9 @@ Morning note for Taylor. No headset session tonight. Live `-p` still Flatland.
 
 - Monorepo stood up and published public; **14** commits on `main` (`da6ee18`…`931c3d6`).
 - `cargo build --release --workspace` — ok.
-- `cargo test --workspace` — ok: **cylinder-shell 29**, **desk-toys 9**, **host-mirror 1**.
+- `cargo test --workspace` — ok: **cylinder-shell 32**, **desk-toys 9**, **host-mirror 1**.
 - `scripts/verify.sh` — ALL OK (build, tests, bash -n, `--help`, temp-prefix install, panels.conf parse).
-- Cylinder-shell headless: layout daemon + Unix-socket IPC, arc packing (gap ahead), curved GLB bake, chord-AABB Field, XR preflight (fail-fast without sockets), Asteroids accept path (`PanelItemAcceptor` → `PanelShell` → curved `SurfaceModel`), curved pointer UV wired (`CurvedPointerPlane`), mesh TEXCOORD_0 unified with hit-test (`u = t`, +X → u=1).
+- Cylinder-shell headless: layout daemon + Unix-socket IPC, arc packing (gap ahead), curved GLB bake, chord-AABB Field, XR preflight (fail-fast without sockets), Asteroids accept path (`PanelItemAcceptor` → `PanelShell` → curved `SurfaceModel`), curved pointer UV wired (`CurvedPointerPlane`), mesh TEXCOORD_0 unified with hit-test (`u = t`, +X → u=1), layout IPC kept open during XR (`LayoutSession` background thread owns the socket; `on_start` pumps `GroupChanged` → `apply_slot`/re-pose/remesh; `LayoutRequestSender` with `send_group_grab`/`set_radius`/`reanchor`) — `bfbe1b4`.
 - Desk-toys: wrist-menu **place-here** (right-strip → kill+respawn with fresh head-relative `STARDUST_STARTUP_TOKEN`).
 - Live Stardust session untouched: still `stardust_panel_shell` → Flatland; no WiVRn restart.
 
@@ -47,11 +47,12 @@ Toys still have no relocate IPC. Place-here = stop then start so the toy reappea
 4. Confirm pointer cursor lands on the texel the eye sees (not mirrored; u convention holds).
 5. Multi-app drop-in: Ghostty + browser + host-mirror on one cylinder, no `app_id` config.
 6. Only after 3–5: consider swapping live `-p` to cylinder-shell; keep Flatland rollback path.
-7. Then: group bead / radius under WiVRn latency, gap-ahead on resize, daemon death with live workers, Protostar stripped-env launch.
+7. Then: visual group bead (gap 3: Spatial/Lines + Grabbable → `send_group_grab`) / radius under WiVRn latency (XR→daemon IPC channel itself done, `bfbe1b4`), gap-ahead on resize, daemon death with live workers, Protostar stripped-env launch.
 
 ## 7. Open follow-ups
 
-- **Group-grab from XR:** layout IPC has `GroupGrab` / `GroupChanged`, but the worker drops the layout socket before `asteroids::run` — no live XR→daemon channel yet. Needs persistent layout client task + re-pose on `GroupChanged`.
+- **Visual group-grab bead (gap 3):** layout IPC stays open during XR on `main` (`LayoutSession`, `bfbe1b4`; deviation 8 partially resolved). Still missing: Spatial/Lines bead + Grabbable wired to `send_group_grab`; headset-only.
+- **Never** point live `-p` at `cylinder-shell` until cursor (texel) + concave face confirmed in headset.
 - **Touch:** `touch_*` not routed (hands drive pointer + pinch buttons only).
 - **Popups / child surfaces:** Flatland `ChildState` path not ported to curved parent.
 - **battery-widget:** still only under `stardust-bootstrap/org.stardustxr.Battery` — not in this monorepo.
