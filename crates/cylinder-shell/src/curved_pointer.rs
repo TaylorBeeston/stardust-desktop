@@ -5,15 +5,21 @@
 
 use crate::field_shape::slice_aabb_extents;
 use crate::hit_test::CylinderSliceHitTest;
-use crate::pointer_uv::{mesh_local_point_hit, mesh_local_ray_hit, SliceHit};
+use crate::pointer_uv::{mesh_local_point_hit, mesh_local_ray_hit, uv_to_mesh_local, SliceHit};
 use glam::Vec3;
 use stardust_xr_asteroids::{Context, CreateInnerInfo, CustomElement, FnWrapper, ValidState};
 use stardust_xr_fusion::{
+    drawable::{Line, LinePoint, Lines, LinesExt as _},
     fields::{Field, FieldExt, Shape},
     spatial::{Spatial, SpatialExt, Transform},
     suis::InputDataType,
+    types::rgba_linear,
 };
-use stardust_xr_molecules::input_action::{InputQueue, InputSnapshot, SingleAction};
+use stardust_xr_molecules::{
+    hover_plane::HoverPlaneSettings,
+    input_action::{InputQueue, InputSnapshot, SingleAction},
+    lines::{self, LineExt as _},
+};
 
 pub const BTN_LEFT: u32 = 0x110;
 pub const BTN_RIGHT: u32 = 0x111;
@@ -88,6 +94,8 @@ pub struct CurvedPointerInner {
     left: SingleAction,
     middle: SingleAction,
     right: SingleAction,
+    /// Flatland-style hover ray/line + hit cursor (updated every input frame).
+    lines: Lines,
 }
 
 impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
@@ -102,6 +110,7 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
         let (field, _) = Field::new(client, &field_spatial, shape).await?;
         // Snapshots arrive in `root` space == mesh-local frame.
         let input = InputQueue::new(client, root.clone(), field.clone(), root_ref).await?;
+        let lines = Lines::new(client, &root, Vec::new()).await?;
         let _ = info.child_space.set_parent(root.spatial_ref().await?);
         Ok(CurvedPointerInner {
             _root: root,
@@ -111,6 +120,7 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
             left: SingleAction::default(),
             middle: SingleAction::default(),
             right: SingleAction::default(),
+            lines,
         })
     }
 
@@ -170,18 +180,93 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
                 (self.on_button.0)(state, btn, false);
             }
         }
-        // Closest hovering (or captured) input drives motion + scroll.
+        // Closest hovering (or captured) input drives motion + scroll + visuals.
         let input = inner.input.input();
         let best = input
             .values()
             .filter_map(|s| snapshot_hit(&h, s.input()).map(|hit| (s, hit)))
             .min_by(|a, b| a.0.distance().total_cmp(&b.0.distance()));
+        let interacting = inner.left.actor_acting() || inner.middle.actor_acting() || inner.right.actor_acting();
+        let mut viz: Vec<Line> = Vec::new();
         if let Some((snap, hit)) = best {
             (self.on_motion.0)(state, hit.uv);
             let scroll = snap.datamap_vec2("scroll");
             if scroll.x != 0.0 || scroll.y != 0.0 {
                 (self.on_scroll.0)(state, [scroll.x, scroll.y]);
             }
+            if let Some(line) = hover_line_from_input(&h, snap, hit, interacting) {
+                viz.push(line);
+            }
+            viz.push(hover_cursor_ring(&h, hit, interacting));
         }
+        let _ = inner.lines.set_lines(viz);
     }
 }
+
+/// Flatland `pointer_input::line_from_point`, but surface end is the **curved** hit.
+fn hover_line_from_input(h: &CylinderSliceHitTest, input: &InputSnapshot, hit: SliceHit, interacting: bool) -> Option<Line> {
+    let fingertip = match input.input() {
+        InputDataType::Pointer { .. } => return None, // Flatland skips ray devices
+        InputDataType::Hand { data } => Vec3::from(data.index.tip.pose.position),
+        InputDataType::Tip { data } => Vec3::from(data.pose.position),
+    };
+    let surface = Vec3::from(uv_to_mesh_local(h, hit.uv.0, hit.uv.1));
+    Some(hover_line(surface, fingertip, interacting))
+}
+
+fn hover_line(surface: Vec3, fingertip: Vec3, interacting: bool) -> Line {
+    let settings = HoverPlaneSettings::default();
+    Line {
+        points: vec![
+            LinePoint {
+                point: surface.into(),
+                thickness: settings.line_start_thickness,
+                color: if interacting {
+                    settings.line_start_color_interact
+                } else {
+                    settings.line_start_color_hover
+                },
+            },
+            LinePoint {
+                point: fingertip.into(),
+                thickness: settings.line_end_thickness,
+                color: if interacting {
+                    settings.line_end_color_interact
+                } else {
+                    settings.line_end_color_hover
+                },
+            },
+        ],
+        cyclic: false,
+    }
+}
+
+/// Small ring on the curved surface at the hit UV (Flatland touch_input::ring style).
+fn hover_cursor_ring(h: &CylinderSliceHitTest, hit: SliceHit, interacting: bool) -> Line {
+    let p = Vec3::from(uv_to_mesh_local(h, hit.uv.0, hit.uv.1));
+    let color = if interacting {
+        rgba_linear!(0.0, 1.0, 0.75, 0.9)
+    } else {
+        rgba_linear!(1.0, 1.0, 1.0, 0.85)
+    };
+    // molecules::circle lies on XZ; stand it up (Flatland touch_input).
+    let transform = glam::Mat4::from_translation(p)
+        * glam::Mat4::from_rotation_x(std::f32::consts::FRAC_PI_2);
+    lines::circle(20, 0.0, 0.008)
+        .thickness(0.0015)
+        .color(color)
+        .transform(transform)
+}
+
+#[cfg(test)]
+mod visual_tests {
+    use super::*;
+
+    #[test]
+    fn hover_line_has_two_points() {
+        let line = hover_line(Vec3::ZERO, Vec3::new(0.0, 0.0, 0.1), false);
+        assert_eq!(line.points.len(), 2);
+        assert!(!line.cyclic);
+    }
+}
+
