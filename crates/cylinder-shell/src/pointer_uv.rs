@@ -76,7 +76,7 @@ pub fn uv_to_surface_px(uv: (f32, f32), size_px: (u32, u32)) -> [f32; 2] {
 /// Flatland places `SurfaceModel(Cursor)` in flat panel metres:
 /// `pos_px = cursor_pos - screen/2 + cursor_size/2 - hotspot_origin`, then
 /// `pos = pos_px * (1,-1) / density`. We map that panel-local point onto the arc via UV
-/// and nudge it toward the user so it sits in front of the concave face.
+/// and nudge it toward the visible +Z face.
 ///
 /// Returns `(translation_mesh_local, scale)` suitable for `SurfaceModel::pos/scl`.
 pub fn cursor_mesh_transform(
@@ -93,14 +93,15 @@ pub fn cursor_mesh_transform(
         cursor_px[0] - screen[0] * 0.5 + cursor_size_px[0] * 0.5 - hotspot_origin_px[0],
         cursor_px[1] - screen[1] * 0.5 + cursor_size_px[1] * 0.5 - hotspot_origin_px[1],
     ];
-    // Flatland: y flips so +panel-local Y is up.
+    // Logical surface pixels are +X right, +Y down. The GLB texture U flip
+    // is not a spatial reflection: do not apply it to the cursor position.
     let local_m = [pos_px[0] / density, -pos_px[1] / density];
-    let u = (0.5 + local_m[0] / h.width_m.max(1e-6)).clamp(0.0, 1.0);
+    let u = (0.5 - local_m[0] / h.width_m.max(1e-6)).clamp(0.0, 1.0);
     let v = (0.5 - local_m[1] / h.height_m.max(1e-6)).clamp(0.0, 1.0);
     let p = uv_to_mesh_local(h, u, v);
     let phi = (0.5 - u) * h.width_m / h.radius_m.max(1e-6);
     let (s, c) = phi.sin_cos();
-    let toward_user = [-s, 0.0, -c];
+    let toward_user = [s, 0.0, c];
     let pos = [
         p[0] + toward_user[0] * 0.001,
         p[1] + toward_user[1] * 0.001,
@@ -218,8 +219,22 @@ mod tests {
             1000.0,
         );
         // Model centre is offset by +16px = +0.016m in flat space from cursor hotspot.
-        // Hotspot at centre → model centre slightly right/down in UV; just check scale + z nudge.
+        // Hotspot at centre → model centre slightly right/down in panel space.
         assert!((scl[0] - 0.032).abs() < 1e-5 && (scl[1] - 0.032).abs() < 1e-5);
-        assert!(pos[2] < -0.0005, "toward-user −Z offset, got {:?}", pos);
+        assert!(pos[0] > 0.0 && pos[1] < 0.0);
+        assert!(pos[2] > -0.0005, "visible-face +Z offset, got {:?}", pos);
     }
+
+    #[test]
+    fn logical_cursor_moves_right_and_down_on_the_visible_face() {
+        let h = h();
+        let pose = |px| cursor_mesh_transform(&h, px, (600, 400), [16.0; 2], [32.0; 2], 1000.0).0;
+        let centre = pose([300.0, 200.0]);
+        let right = pose([400.0, 200.0]);
+        let down = pose([300.0, 250.0]);
+        assert!(right[0] > centre[0], "rightward pixels must move toward panel +X");
+        assert!(down[1] < centre[1], "downward pixels must move toward panel -Y");
+        assert!(centre[2] > 0.0, "cursor must sit in front of the panel centre");
+    }
+
 }
