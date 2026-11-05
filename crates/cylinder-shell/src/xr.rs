@@ -21,10 +21,10 @@ use gluon_ipc::Node;
 use serde::{Deserialize, Serialize};
 use stardust_xr_asteroids::{
     ClientState, Context, CustomElement as _, Element, Entity, Migrate, Reify, Tasker, Transformable as _,
-    components::Derezzable,
+    components::{Derezzable, KeyboardHandler, MouseHandler, ScrollSource as AsteroidsScrollSource},
 };
 use stardust_xr_fusion::types::{Posef, Resource, Size2};
-use stardust_xr_panels::panel_item::{ScrollSource, SurfaceId, SurfaceUpdateTarget};
+use stardust_xr_panels::panel_item::{ModifierState, ScrollSource, SurfaceId, SurfaceUpdateTarget};
 use stardust_xr_panels_asteroids::{
     panel_item_acceptor::PanelItemAcceptor,
     panel_shell::{PanelShell, PanelShellHandler},
@@ -85,6 +85,24 @@ pub struct CylinderShell {
     /// Sends GroupGrab / SetRadius / Reanchor while the layout thread owns the socket.
     #[serde(skip)]
     layout_tx: Option<LayoutRequestSender>,
+    /// Last pointer position (surface px) — relative mouse motion (manifold) accumulates here.
+    #[serde(skip)]
+    cursor_px: [f32; 2],
+}
+
+/// Apply a relative mouse delta to the cursor, clamped to the surface. Pure — unit-tested.
+pub fn step_cursor(pos: [f32; 2], delta: [f32; 2], size_px: (u32, u32)) -> [f32; 2] {
+    let (w, h) = ((size_px.0 as f32 - 1.0).max(0.0), (size_px.1 as f32 - 1.0).max(0.0));
+    [(pos[0] + delta[0]).clamp(0.0, w), (pos[1] + delta[1]).clamp(0.0, h)]
+}
+
+fn scroll_source(s: AsteroidsScrollSource) -> ScrollSource {
+    match s {
+        AsteroidsScrollSource::Wheel => ScrollSource::Wheel,
+        AsteroidsScrollSource::Finger => ScrollSource::Touch,
+        AsteroidsScrollSource::Continuous => ScrollSource::Continuous,
+        AsteroidsScrollSource::WheelTilt => ScrollSource::WheelTilt,
+    }
 }
 
 impl Default for CylinderShell {
@@ -104,6 +122,7 @@ impl Default for CylinderShell {
                 title: None,
             }),
             layout_tx: None,
+            cursor_px: [0.0, 0.0],
         }
     }
 }
@@ -168,6 +187,10 @@ impl Reify for CylinderShell {
                 state.worker.on_accept_panel(&shell);
                 state.shell = Some(shell);
             }))
+            // Keyboard + mouse handlers on the panel Field: this is what manifold (and any
+            // Stardust keyboard/mouse input method) targets — same as Flatland's surfaces.rs.
+            .component(self.shell.is_some().then(|| self.keyboard_handler()))
+            .component(self.shell.is_some().then(|| self.mouse_handler()))
             .build()
             .maybe_child(self.pointer_plane())
             .maybe_child(self.panel_shell(context))
@@ -181,6 +204,61 @@ impl CylinderShell {
         CylinderSliceHitTest { radius_m: self.radius_m, yaw_rad: 0.0, width_m: self.width_m, height_m: self.height_m }
     }
 
+    fn keyboard_handler(&self) -> KeyboardHandler<Self> {
+        let item = self.shell.as_ref().map(|s| s.item().clone());
+        KeyboardHandler::<Self>::new().on_key_async(move |key, timestamp| {
+            tracing::debug!(keycode = key.keycode, pressed = key.pressed, "key");
+            if let Some(item) = &item {
+                let _ = item.key(
+                    SurfaceId::Toplevel,
+                    key.keycode,
+                    key.pressed,
+                    ModifierState {
+                        depressed: key.modifiers.depressed,
+                        latched: key.modifiers.latched,
+                        locked: key.modifiers.locked,
+                        layout_group: key.modifiers.layout_group,
+                    },
+                    key.keymap,
+                    timestamp,
+                );
+            }
+        })
+    }
+
+    fn mouse_handler(&self) -> MouseHandler<Self> {
+        let item = self.shell.as_ref().map(|s| s.item().clone());
+        MouseHandler::<Self>::new()
+            .on_button_async({
+                let item = item.clone();
+                move |button, pressed, timestamp| {
+                    tracing::debug!(button, pressed, "mouse button");
+                    if let Some(item) = &item {
+                        let _ = item.pointer_button(SurfaceId::Toplevel, button, pressed, timestamp);
+                    }
+                }
+            })
+            .on_motion(|state: &mut Self, motion, timestamp| {
+                let Some(shell) = &state.shell else { return };
+                let d = [motion.x, -motion.y];
+                state.cursor_px = step_cursor(state.cursor_px, d, state.size_px);
+                let _ = shell.item().pointer_motion(SurfaceId::Toplevel, Some(d.into()), state.cursor_px.into(), timestamp);
+            })
+            .on_scroll_discrete_async({
+                let item = item.clone();
+                move |v, source, timestamp| {
+                    if let Some(item) = &item {
+                        let _ = item.pointer_scroll_discrete(SurfaceId::Toplevel, [v.x, -v.y].into(), scroll_source(source), timestamp);
+                    }
+                }
+            })
+            .on_scroll_continuous_async(move |v, source, timestamp| {
+                if let Some(item) = &item {
+                    let _ = item.pointer_scroll_pixels(SurfaceId::Toplevel, [v.x, -v.y].into(), scroll_source(source), timestamp);
+                }
+            })
+    }
+
     /// Curved pointer input; only once a PanelItem is accepted (nothing to send to before).
     fn pointer_plane(&self) -> Option<impl Element<Self> + use<>> {
         self.shell.as_ref()?;
@@ -189,10 +267,12 @@ impl CylinderShell {
                 .on_motion(|state: &mut Self, uv| {
                     let Some(shell) = &state.shell else { return };
                     let [x, y] = uv_to_surface_px(uv, state.size_px);
+                    state.cursor_px = [x, y];
                     let _ = shell.item().pointer_motion(SurfaceId::Toplevel, None, [x, y].into(), None);
                 })
                 .on_button(|state: &mut Self, button, pressed| {
                     let Some(shell) = &state.shell else { return };
+                    tracing::info!(button, pressed, "xr pointer button");
                     let _ = shell.item().pointer_button(SurfaceId::Toplevel, button, pressed, None);
                 })
                 .on_scroll(|state: &mut Self, delta| {
@@ -347,6 +427,12 @@ mod tests {
             app_id: Some("test".into()),
             title: None,
         }
+    }
+
+    #[test]
+    fn step_cursor_accumulates_and_clamps() {
+        assert_eq!(step_cursor([10.0, 10.0], [5.0, -3.0], (100, 50)), [15.0, 7.0]);
+        assert_eq!(step_cursor([98.0, 1.0], [10.0, -10.0], (100, 50)), [99.0, 0.0]);
     }
 
     #[test]

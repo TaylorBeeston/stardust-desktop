@@ -132,6 +132,16 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
             return;
         }
         let h = self.hit_test;
+        {
+            // Throttled diagnostics: do XR inputs reach the queue, and do they hit the arc?
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static N: AtomicU32 = AtomicU32::new(0);
+            let q = inner.input.input();
+            if !q.is_empty() && N.fetch_add(1, Ordering::Relaxed) % 90 == 0 {
+                let hits = q.values().filter(|s| snapshot_hit(&h, s.input()).is_some()).count();
+                tracing::info!(inputs = q.len(), hits, "xr input frame");
+            }
+        }
         let hovering = |s: &InputSnapshot| snapshot_hit(&h, s.input()).is_some();
         let pressed = |key: &'static str, finger: fn(&stardust_xr_fusion::suis::Hand) -> &stardust_xr_fusion::suis::Finger| {
             move |s: &InputSnapshot| match s.input() {
