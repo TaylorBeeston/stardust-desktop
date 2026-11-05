@@ -1,11 +1,10 @@
 //! `CurvedPointerPlane`: Asteroids element that routes XR pointer / hand input onto the
 //! curved slice. Replaces Flatland's flat `PointerPlane` UV (`x + w/2`) with
-//! [`crate::pointer_uv`] on the true arc. Capture volume is still the chord-AABB Field
-//! (Fusion has no cylinder-slice SDF).
+//! [`crate::pointer_uv`] on the true arc. Capture volume follows the arc using a union of thin tangent fields.
 
-use crate::field_shape::slice_aabb_extents;
+use crate::field_shape::field_shape_for_slice;
 use crate::hit_test::CylinderSliceHitTest;
-use crate::pointer_uv::{mesh_local_point_hit, mesh_local_ray_hit, uv_to_mesh_local, SliceHit};
+use crate::pointer_uv::{mesh_local_point_hit, mesh_local_ray_hit, OVERLAY_INSET_M, SliceHit};
 use glam::Vec3;
 use stardust_xr_asteroids::{Context, CreateInnerInfo, CustomElement, FnWrapper, ValidState};
 use stardust_xr_fusion::{
@@ -26,10 +25,8 @@ pub const BTN_RIGHT: u32 = 0x111;
 pub const BTN_MIDDLE: u32 = 0x112;
 
 /// Hand / tip hover band either side of the surface (metres), like Flatland's `|z| < 0.2`.
-/// Symmetric: viewed from the concave (inside) face the radial offset is negative.
+/// Symmetric: on the concave (inside) face the radial offset is negative.
 const HAND_HOVER: std::ops::Range<f32> = -0.2..0.2;
-/// Extra Field padding so rays grazing the arc edges still reach us.
-const FIELD_PAD_M: f32 = 0.02;
 
 /// Where an input lands on this slice, if anywhere. Pure — unit-tested.
 pub fn snapshot_hit(h: &CylinderSliceHitTest, input: &InputDataType) -> Option<SliceHit> {
@@ -79,12 +76,7 @@ impl<State: ValidState> CurvedPointerPlane<State> {
 }
 
 fn field_box(h: &CylinderSliceHitTest) -> (Transform, Shape) {
-    let (x, y, z) = slice_aabb_extents(h.width_m, h.height_m, h.radius_m);
-    // Mesh spans z ∈ [-zmax, 0]; centre the box on that span.
-    (
-        Transform::from_translation([0.0, 0.0, -z * 0.5]),
-        Shape::Box { size: [x + FIELD_PAD_M, y + FIELD_PAD_M, z + FIELD_PAD_M].into() },
-    )
+    (Transform::IDENTITY, field_shape_for_slice(h.width_m, h.height_m, h.radius_m))
 }
 
 pub struct CurvedPointerInner {
@@ -213,23 +205,16 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
 /// - Tip: both ends from tip pose (surface clamped to plane)
 /// - start thickness 0.0, end thickness 0.005; end color alpha 0
 fn hover_line_from_input(h: &CylinderSliceHitTest, input: &InputSnapshot, hit: SliceHit, interacting: bool) -> Option<Line> {
-    let (surface_src, end) = match input.input() {
-        InputDataType::Pointer { .. } => return None, // Flatland skips ray devices
-        InputDataType::Hand { data } => (
-            Vec3::from(data.stable_pinch_position()),
-            Vec3::from(data.predicted_pinch_position()),
-        ),
-        InputDataType::Tip { data } => {
-            let p = Vec3::from(data.pose.position);
-            (p, p)
-        }
+    let end = match input.input() {
+        InputDataType::Pointer { .. } => return None,
+        InputDataType::Hand { data } => Vec3::from(data.predicted_pinch_position()),
+        InputDataType::Tip { data } => Vec3::from(data.pose.position),
     };
-    // Prefer the already-computed curved hit UV (from snapshot_hit) so the line
-    // endpoint sits on the arc the input actually targeted — not a re-project of
-    // a possibly off-surface pinch that could slide.
-    let surface = Vec3::from(uv_to_mesh_local(h, hit.uv.0, hit.uv.1));
-    let _ = surface_src; // documented: Flatland projects this; we use hit.uv instead
-    Some(hover_line(surface, end, interacting))
+    Some(hover_line_at_hit(h, hit, end, interacting))
+}
+
+fn hover_line_at_hit(h: &CylinderSliceHitTest, hit: SliceHit, end: Vec3, interacting: bool) -> Line {
+    hover_line(Vec3::from(h.surface_point(hit.uv.0, hit.uv.1, OVERLAY_INSET_M)), end, interacting)
 }
 
 fn hover_line(surface: Vec3, fingertip: Vec3, interacting: bool) -> Line {
@@ -261,19 +246,20 @@ fn hover_line(surface: Vec3, fingertip: Vec3, interacting: bool) -> Line {
 
 /// Small ring on the curved surface at the hit UV (Flatland touch_input::ring style).
 fn hover_cursor_ring(h: &CylinderSliceHitTest, hit: SliceHit, interacting: bool) -> Line {
-    let p = Vec3::from(uv_to_mesh_local(h, hit.uv.0, hit.uv.1));
     let color = if interacting {
         rgba_linear!(0.0, 1.0, 0.75, 0.9)
     } else {
         rgba_linear!(1.0, 1.0, 1.0, 0.85)
     };
-    // molecules::circle lies on XZ; stand it up (Flatland touch_input).
-    let transform = glam::Mat4::from_translation(p)
-        * glam::Mat4::from_rotation_x(std::f32::consts::FRAC_PI_2);
-    lines::circle(20, 0.0, 0.008)
-        .thickness(0.0015)
-        .color(color)
-        .transform(transform)
+    let points = (0..20).map(|i| {
+        let theta = i as f32 / 20.0 * std::f32::consts::TAU;
+        let (s, c) = theta.sin_cos();
+        h.surface_point(hit.uv.0 + c * 0.008 / h.width_m,
+            hit.uv.1 + s * 0.008 / h.height_m, OVERLAY_INSET_M)
+    });
+    let mut ring = lines::line_from_points(points.collect());
+    ring.cyclic = true;
+    ring.thickness(0.0015).color(color)
 }
 
 #[cfg(test)]
@@ -306,5 +292,31 @@ mod visual_tests {
         assert!(ring.points.len() >= 8);
         assert!(ring.cyclic);
     }
+
+    #[test]
+    fn hover_ring_vertices_follow_inset_radius_at_edge_uvs() {
+        let h = crate::mesh::rendered_slice(0.42666668, 0.24, 0.45);
+        for u in [0.0, 0.02, 0.5, 0.98, 1.0] {
+            let hit = SliceHit {uv: (u, 0.5), distance: 0.0};
+            let ring = hover_cursor_ring(&h, hit, false);
+            for p in ring.points {
+                let rho = (p.point.x * p.point.x + (p.point.z - h.radius_m).powi(2)).sqrt();
+                assert!((rho - (h.radius_m - OVERLAY_INSET_M)).abs() < 1e-5);
+            }
+        }
+    }
+
+
+    #[test]
+    fn hover_line_endpoint_uses_inset_arc_not_chord_at_edges() {
+        let h = crate::mesh::rendered_slice(0.42666668, 0.24, 0.45);
+        for u in [0.01, 0.99] {
+            let line = hover_line_at_hit(&h, SliceHit {uv: (u, 0.5), distance: 0.0}, Vec3::new(0.0, 0.0, 0.2), false);
+            let p = line.points[0].point;
+            assert!(p.z > 0.04, "edge endpoint must not land on z=0 chord");
+            assert!((p.x.hypot(p.z - h.radius_m) - (h.radius_m - OVERLAY_INSET_M)).abs() < 1e-5);
+        }
+    }
+
 }
 

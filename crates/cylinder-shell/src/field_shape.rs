@@ -1,20 +1,11 @@
-//! Closest Fusion [`Shape`] for a cylinder-slice panel Field.
-//!
-//! Fusion's SDFs include solid `Cylinder` (Y-axis), `Box`, `Torus`, etc., but **no
-//! cylinder-shell / curved-quad surface**. Flatland's lab uses a flat `Shape::Box` proxy
-//! for input while the mesh bends (`curve.rs` "phase 2"). Product owns the curved
-//! ray→UV math in [`crate::CylinderSliceHitTest`]; the Field here is the closest capture
-//! volume the server will accept — the axis-aligned box of the chord AABB in mesh-local
-//! frame (centre origin, bend toward −Z).
+//! Segmented thin field following the same rendered arc as the panel mesh.
+//! Fusion has no cylinder-shell primitive, but supports unions of transformed boxes.
+//! Tangent segments avoid the old chord box missing the curved edges and claiming empty space.
 
 use stardust_xr_fusion::fields::Shape;
 
-/// Full extents `(x, y, z)` metres of the chord AABB for a cylinder-slice panel.
-///
-/// Mesh verts lie in `x ∈ [-xmax, xmax]`, `y ∈ [-h/2, h/2]`, `z ∈ [-zmax, 0]` with the
-/// axis at `(0, 0, -radius)`. The returned box is sized to cover that AABB when centred
-/// on the panel spatial (depth `zmax`, so the +Z half sticks slightly past the chord
-/// toward the user — acceptable capture padding).
+/// Full extents `(x, y, z)` metres of the rendered slice AABB.
+/// The actual curved field below is not this box; this remains useful for bounds.
 pub fn slice_aabb_extents(width_m: f32, height_m: f32, radius_m: f32) -> (f32, f32, f32) {
     let width = width_m.max(1e-4);
     let height = height_m.max(1e-4);
@@ -29,12 +20,26 @@ pub fn slice_aabb_extents(width_m: f32, height_m: f32, radius_m: f32) -> (f32, f
     (2.0 * xmax, height, zmax.max(0.01))
 }
 
-/// Closest Field shape for a curved panel of the given metres size on `radius_m`.
+/// Full field thickness. Segment sag is below 0.1 mm at normal headset radii.
+pub const FIELD_THICKNESS_M: f32 = 0.006;
+
 pub fn field_shape_for_slice(width_m: f32, height_m: f32, radius_m: f32) -> Shape {
-    let (x, y, z) = slice_aabb_extents(width_m, height_m, radius_m);
-    Shape::Box {
-        size: [x, y, z].into(),
-    }
+    let h = crate::mesh::rendered_slice(width_m, height_m, radius_m);
+    let count = crate::mesh::segments_for(h.width_m / h.radius_m);
+    let angle = h.width_m / h.radius_m / count as f32;
+    let chord = 2.0 * h.radius_m * (angle * 0.5).sin();
+    let sag = h.radius_m * (1.0 - (angle * 0.5).cos());
+    let shapes = (0..count).map(|i| {
+        let u = (i as f32 + 0.5) / count as f32;
+        // The chord midpoint is sag metres inward from the true arc.
+        let centre = glam::Vec3::from(h.surface_point(u, 0.5, sag));
+        let transform = glam::Mat4::from_rotation_translation(h.surface_rotation(u), centre);
+        Shape::Transform {
+            transform: transform.into(),
+            shape: Box::new(Shape::Box { size: [chord + 0.0002, h.height_m, FIELD_THICKNESS_M].into() }),
+        }
+    }).collect();
+    Shape::Union { shapes }
 }
 
 #[cfg(test)]
@@ -56,7 +61,7 @@ mod tests {
         let bent = slice_aabb_extents(0.64, 0.36, 0.50);
         assert!(bent.2 > flat.2);
         assert!(bent.0 < flat.0); // chord shorter than arc width
-        let _ = field_shape_for_slice(0.64, 0.36, 0.70); // type-checks Shape::Box
+        let _ = field_shape_for_slice(0.64, 0.36, 0.70); // type-checks the composed shape
     }
 
     #[test]
@@ -72,7 +77,7 @@ mod tests {
         let half = h.width_m / 2.0 / h.radius_m;
         let (s, c) = half.sin_cos();
         let x = h.radius_m * s;
-        let z = -h.radius_m * (1.0 - c);
+        let z = h.radius_m * (1.0 - c);
         // inset so exact-edge float noise cannot push u/v outside [0,1]
         let uv = h.mesh_local_point_to_uv([x * 0.999, h.height_m / 2.0 * 0.999, z]).unwrap();
         assert!(uv.0 < 0.01 && uv.1 < 0.01, "{uv:?}");
@@ -82,4 +87,20 @@ mod tests {
     fn close(a: (f32, f32), b: (f32, f32)) -> bool {
         (a.0 - b.0).abs() < 1e-4 && (a.1 - b.1).abs() < 1e-4
     }
+
+    #[test]
+    fn field_follows_rendered_edges_without_filling_the_chord() {
+        let h = crate::mesh::rendered_slice(0.42666668, 0.24, 0.45);
+        let field = field_shape_for_slice(h.width_m, h.height_m, h.radius_m);
+        for u in [0.001, 0.05, 0.25, 0.5, 0.75, 0.95, 0.999] {
+            let p = h.surface_point(u, 0.5, 0.0);
+            assert!(field.sample(p).distance <= 0.0, "arc edge {u} must be inside capture field");
+            let front = h.surface_point(u, 0.5, 0.02);
+            assert!(field.sample(front).distance > 0.01, "field must not claim space ahead of arc");
+        }
+        let edge_z = h.surface_point(0.0, 0.5, 0.0)[2];
+        assert!(field.sample([0.0, 0.0, edge_z * 0.5]).distance > 0.01,
+            "chord interior must not masquerade as the surface");
+    }
+
 }
