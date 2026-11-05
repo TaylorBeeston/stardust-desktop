@@ -37,7 +37,8 @@ pub fn snapshot_hit(h: &CylinderSliceHitTest, input: &InputDataType) -> Option<S
         InputDataType::Pointer { data } => {
             mesh_local_ray_hit(h, Vec3::from(data.pose.position).to_array(), Vec3::from(data.direction()).to_array())
         }
-        InputDataType::Hand { data } => mesh_local_point_hit(h, Vec3::from(data.index.tip.pose.position).to_array())
+        // Flatland pointer_input::hover_point(stable=true) uses pinch, not index tip.
+        InputDataType::Hand { data } => mesh_local_point_hit(h, Vec3::from(data.stable_pinch_position()).to_array())
             .filter(|hit| HAND_HOVER.contains(&hit.distance)),
         InputDataType::Tip { data } => mesh_local_point_hit(h, Vec3::from(data.pose.position).to_array())
             .filter(|hit| HAND_HOVER.contains(&hit.distance)),
@@ -203,15 +204,32 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
     }
 }
 
-/// Flatland `pointer_input::line_from_point`, but surface end is the **curved** hit.
+/// Flatland `pointer_input::line_from_input` / `line_from_point`, but the surface
+/// endpoint is the **curved** hit (not a flat z=0 clamp).
+///
+/// Flatland visuals (HoverPlaneSettings::default):
+/// - Pointer (ray) devices: no line
+/// - Hand: surface ← stable_pinch projected to plane; end ← predicted_pinch
+/// - Tip: both ends from tip pose (surface clamped to plane)
+/// - start thickness 0.0, end thickness 0.005; end color alpha 0
 fn hover_line_from_input(h: &CylinderSliceHitTest, input: &InputSnapshot, hit: SliceHit, interacting: bool) -> Option<Line> {
-    let fingertip = match input.input() {
+    let (surface_src, end) = match input.input() {
         InputDataType::Pointer { .. } => return None, // Flatland skips ray devices
-        InputDataType::Hand { data } => Vec3::from(data.index.tip.pose.position),
-        InputDataType::Tip { data } => Vec3::from(data.pose.position),
+        InputDataType::Hand { data } => (
+            Vec3::from(data.stable_pinch_position()),
+            Vec3::from(data.predicted_pinch_position()),
+        ),
+        InputDataType::Tip { data } => {
+            let p = Vec3::from(data.pose.position);
+            (p, p)
+        }
     };
+    // Prefer the already-computed curved hit UV (from snapshot_hit) so the line
+    // endpoint sits on the arc the input actually targeted — not a re-project of
+    // a possibly off-surface pinch that could slide.
     let surface = Vec3::from(uv_to_mesh_local(h, hit.uv.0, hit.uv.1));
-    Some(hover_line(surface, fingertip, interacting))
+    let _ = surface_src; // documented: Flatland projects this; we use hit.uv instead
+    Some(hover_line(surface, end, interacting))
 }
 
 fn hover_line(surface: Vec3, fingertip: Vec3, interacting: bool) -> Line {
@@ -267,6 +285,26 @@ mod visual_tests {
         let line = hover_line(Vec3::ZERO, Vec3::new(0.0, 0.0, 0.1), false);
         assert_eq!(line.points.len(), 2);
         assert!(!line.cyclic);
+        let s = HoverPlaneSettings::default();
+        assert!((line.points[0].thickness - s.line_start_thickness).abs() < 1e-6);
+        assert!((line.points[1].thickness - s.line_end_thickness).abs() < 1e-6);
+        // Surface endpoint is first (same order as Flatland line_from_point).
+        assert_eq!(line.points[0].point, Vec3::ZERO.into());
+        assert_eq!(line.points[1].point, Vec3::new(0.0, 0.0, 0.1).into());
+    }
+
+    #[test]
+    fn hover_cursor_ring_centred_on_uv() {
+        let h = CylinderSliceHitTest {
+            radius_m: 0.7,
+            yaw_rad: 0.0,
+            width_m: 0.6,
+            height_m: 0.4,
+        };
+        let hit = SliceHit { uv: (0.5, 0.5), distance: 0.0 };
+        let ring = hover_cursor_ring(&h, hit, false);
+        assert!(ring.points.len() >= 8);
+        assert!(ring.cyclic);
     }
 }
 
