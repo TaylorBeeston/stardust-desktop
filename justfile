@@ -35,4 +35,7 @@ verify:
 # the Flatland-backed stardust_panel_shell until the cylinder worker accepts panels.
 install-cylinder-shell: build
     install -Dm755 -t {{prefix}}/bin target/release/cylinder-shell target/release/cylinder-layout
-    @echo "cylinder-shell + cylinder-layout installed (layout/IPC/hit-test/mesh/XR accept wired; headset concave+hit-test pending). Do not point -p at it yet (see docs/cylinder-shell-design.md)"
+    install -d {{prefix}}/libexec
+    sed 's|@PREFIX@|{{prefix}}|g' scripts/stardust_cylinder_shell.in > {{prefix}}/libexec/stardust_cylinder_shell
+    chmod 755 {{prefix}}/libexec/stardust_cylinder_shell
+    @echo "cylinder-shell + cylinder-layout + libexec/stardust_cylinder_shell installed. Live -p stays Flatland until headset confirms (see docs/cyl-headset-test.md)."

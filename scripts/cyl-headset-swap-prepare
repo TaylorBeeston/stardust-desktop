@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# Prepare (do NOT apply) a live -p swap from Flatland → cylinder-shell.
+# Writes candidates under ~/.local/share/roadie-backups/cyl-headset-swap-<ts>/
+# Never restarts anything; never overwrites live files.
+set -euo pipefail
+PREFIX="${PREFIX:-$HOME/.local}"
+BOOT="${STARDUST_BOOTSTRAP:-$HOME/dev/open-source/stardust-bootstrap}"
+TS=$(date +%Y%m%d-%H%M%S)
+BK="$HOME/.local/share/roadie-backups/cyl-headset-swap-$TS"
+mkdir -p "$BK/candidates"
+
+cp -a "$HOME/.local/libexec/stardust_panel_shell" "$BK/live-stardust_panel_shell"
+cp -a "$BOOT/startup.sh" "$BK/live-startup.sh"
+cp -a "$HOME/.config/systemd/user/stardust-session.service" "$BK/live-stardust-session.service"
+sha256sum "$BOOT/prefix/usr/bin/stardust-xr-wayland-service" > "$BK/wayland-service.sha256"
+
+sed "s|@PREFIX@|$PREFIX|g" "$(dirname "$0")/stardust_cylinder_shell.in" \
+  > "$BK/candidates/stardust_panel_shell.cylinder"
+chmod 755 "$BK/candidates/stardust_panel_shell.cylinder"
+
+sed "s|@PREFIX@|$PREFIX|g" "$(dirname "$0")/stardust_cylinder_shell.in" \
+  > "$BK/candidates/stardust_cylinder_shell"
+chmod 755 "$BK/candidates/stardust_cylinder_shell"
+
+# Candidate startup: -p → cylinder libexec + start layout daemon if needed
+python3 - "$BOOT/startup.sh" "$BK/candidates/startup.sh.cylinder" "$PREFIX" <<'PY'
+from pathlib import Path
+import sys
+src, dst, prefix = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+t = src.read_text()
+cyl = f"{prefix}/libexec/stardust_cylinder_shell"
+t2 = []
+for line in t.splitlines(True):
+    if "stardust-xr-wayland-service -p" in line:
+        # replace -p argument (quoted or bare)
+        import re
+        line = re.sub(
+            r'(-p\s+)(?:"[^"]+"|\S+)',
+            r'\1"' + cyl + '"',
+            line,
+            count=1,
+        )
+    t2.append(line)
+t = "".join(t2)
+marker = 'mkdir -p "${XDG_RUNTIME_DIR:-/tmp}/stardust-protected-panel-provider"'
+snippet = '''mkdir -p "${XDG_RUNTIME_DIR:-/tmp}/stardust-cylinder"
+if [[ ! -S "${XDG_RUNTIME_DIR:-/tmp}/stardust-cylinder/layout.sock" ]]; then
+  cylinder-layout >>"${XDG_RUNTIME_DIR:-/tmp}/cylinder-layout.log" 2>&1 &
+fi
+'''
+if "cylinder-layout" not in t and marker in t:
+    t = t.replace(marker, snippet + marker, 1)
+dst.write_text(t)
+PY
+chmod 755 "$BK/candidates/startup.sh.cylinder"
+
+cat > "$BK/GO_LIVE.txt" << GO
+# Cylinder -p swap go-live (REQUIRES Taylor OK)
+# Prefer side path first: scripts/cyl-headset-side-start (NO restart).
+
+Backup: $BK
+Keep WaylandService staged2 (see wayland-service.sha256).
+
+## Option Hot (no session restart; NEW windows only)
+cp "$BK/candidates/stardust_panel_shell.cylinder" "$HOME/.local/libexec/stardust_panel_shell"
+install -Dm755 "$BK/candidates/stardust_cylinder_shell" "$PREFIX/libexec/stardust_cylinder_shell"
+mkdir -p "\${XDG_RUNTIME_DIR}/stardust-cylinder"
+# start layout if not up: cylinder-layout &
+# then open a NEW app on live wayland-1 (or HOST_MIRROR_REPLACE one mirror).
+
+## Option Clean (stardust-session restart — disrupts live Flatland mirrors)
+install -Dm755 "$BK/candidates/stardust_cylinder_shell" "$PREFIX/libexec/stardust_cylinder_shell"
+cp "$BK/candidates/startup.sh.cylinder" "$BOOT/startup.sh"
+systemctl --user restart stardust-session.service
+# NEVER restart wivrn / wayvr / GNOME.
+
+## Rollback
+See $BK/ROLLBACK.txt
+GO
+
+cat > "$BK/ROLLBACK.txt" << RB
+cp "$BK/live-stardust_panel_shell" "$HOME/.local/libexec/stardust_panel_shell"
+cp "$BK/live-startup.sh" "$BOOT/startup.sh"
+# If Option Clean was used: systemctl --user restart stardust-session.service
+# Stop any layout daemon by its recorded pid only. Keep WaylandService staged2.
+RB
+
+echo "swap candidates prepared (NOT applied): $BK"
+ls -la "$BK" "$BK/candidates"

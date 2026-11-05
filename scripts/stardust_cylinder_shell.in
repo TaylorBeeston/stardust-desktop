@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Panel shell for stardust-xr-wayland-service:  -p <this file>
+# Candidate B worker. `just install-cylinder-shell` (or cyl-headset scripts) write this
+# with @PREFIX@ replaced. Does NOT replace Flatland's stardust_panel_shell by itself.
+PREFIX="${STARDUST_PREFIX:-@PREFIX@}"
+export PATH="$PREFIX/bin:${PATH:-/usr/bin:/bin}"
+# Keep bootstrap share so asteroids resources resolve when protostar strips env.
+BOOT_SHARE="${STARDUST_BOOTSTRAP_SHARE:-$HOME/dev/open-source/stardust-bootstrap/prefix/usr/share}"
+export STARDUST_RES_PREFIXES="$PREFIX/share:${BOOT_SHARE}:${STARDUST_RES_PREFIXES:-/usr/share}"
+LOG="${XDG_RUNTIME_DIR:-/tmp}/stardust-cylinder-shell.log"
+SHELL_BIN="${CYLINDER_SHELL_BIN:-$PREFIX/bin/cylinder-shell}"
+[ -x "$SHELL_BIN" ] || SHELL_BIN="$(command -v cylinder-shell || echo cylinder-shell)"
+{
+  echo "==== $(date -Is) pid=$$ ===="
+  echo "STARDUST_INSTANCE=${STARDUST_INSTANCE-}"
+  echo "SDXR_PROTECTED_PANEL=${SDXR_PROTECTED_PANEL-}"
+  echo "SDXR_WL_APP_ID=${SDXR_WL_APP_ID-} title=${SDXR_WL_TITLE-}"
+  echo "shell=$SHELL_BIN"
+} >>"$LOG" 2>&1
+# Optional per-panel metrics (no app_id branching — product path).
+# Hosts can export CYLINDER_WIDTH_PX / CYLINDER_HEIGHT_PX / CYLINDER_DENSITY.
+export RUST_LOG="${RUST_LOG:-cylinder_shell=info,warn}"
+exec "$SHELL_BIN" "$@" >>"$LOG" 2>&1

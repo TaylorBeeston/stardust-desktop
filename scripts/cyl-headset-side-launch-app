@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Launch one app into the SIDE cylinder compositor (not live Flatland wayland-1).
+set -euo pipefail
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/cylinder-headset-side"
+if [[ ! -f "$STATE/wayland-display" || ! -f "$STATE/side.pid" ]]; then
+  echo "side stack not running; run cyl-headset-side-start first" >&2
+  exit 1
+fi
+if ! kill -0 "$(cat "$STATE/side.pid")" 2>/dev/null; then
+  echo "side wayland-service dead; restart with cyl-headset-side-start" >&2
+  exit 1
+fi
+WL=$(cat "$STATE/wayland-display")
+export WAYLAND_DISPLAY="$WL"
+export CYLINDER_LAYOUT_SOCK="$(cat "$STATE/layout.sock.path")"
+export STARDUST_INSTANCE="$(cat "$STATE/instance")"
+# Prefer ghostty; fall back to kitty. Extra args passed through.
+APP="${1:-ghostty}"
+shift || true
+if ! command -v "$APP" >/dev/null; then
+  echo "app not found: $APP" >&2
+  exit 1
+fi
+# Sensible default panel metrics for a terminal if not set
+export CYLINDER_WIDTH_PX="${CYLINDER_WIDTH_PX:-1280}"
+export CYLINDER_HEIGHT_PX="${CYLINDER_HEIGHT_PX:-720}"
+export CYLINDER_DENSITY="${CYLINDER_DENSITY:-3000}"
+LOG="${XDG_RUNTIME_DIR:-/tmp}/cylinder-side-app.log"
+echo "launching $APP on $WL (instance=$STARDUST_INSTANCE)" | tee -a "$LOG"
+nohup "$APP" "$@" >>"$LOG" 2>&1 &
+echo $! > "$STATE/last-app.pid"
+echo "app pid=$(cat "$STATE/last-app.pid")  log=$LOG"

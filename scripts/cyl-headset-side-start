@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Start cylinder-layout + a SECOND wayland-service (-p cylinder) on a free Wayland
+# display, as a client of the LIVE stardust-0 server. Does NOT restart
+# stardust-session / wivrn / wayvr / GNOME. Does NOT touch live -p Flatland.
+set -euo pipefail
+PREFIX="${PREFIX:-$HOME/.local}"
+BOOT="${STARDUST_BOOTSTRAP:-$HOME/dev/open-source/stardust-bootstrap}"
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/cylinder-headset-side"
+LOGDIR="${XDG_RUNTIME_DIR:-/tmp}"
+INSTANCE="${STARDUST_INSTANCE:-stardust-0}"
+mkdir -p "$STATE" "$PREFIX/libexec"
+
+if [[ -f "$STATE/side.pid" ]] && kill -0 "$(cat "$STATE/side.pid")" 2>/dev/null; then
+  echo "already running (side.pid=$(cat "$STATE/side.pid")); use cyl-headset-side-stop first" >&2
+  exit 1
+fi
+
+# Refuse if live server socket missing
+SERVER_SOCK="${XDG_RUNTIME_DIR:-/run/user/$UID}/stardust-server/$INSTANCE"
+if [[ ! -S "$SERVER_SOCK" && ! -e "$SERVER_SOCK" ]]; then
+  echo "no live server socket at $SERVER_SOCK — is stardust-session up?" >&2
+  exit 1
+fi
+
+# Install / refresh wrapper + bins into PREFIX (binaries only; never overwrites Flatland libexec)
+install -Dm755 -t "$PREFIX/bin" \
+  "$(dirname "$0")/../target/release/cylinder-shell" \
+  "$(dirname "$0")/../target/release/cylinder-layout" 2>/dev/null \
+  || { command -v cylinder-shell >/dev/null && command -v cylinder-layout >/dev/null; } \
+  || { echo "build first: cargo build --release -p cylinder-shell" >&2; exit 1; }
+
+sed "s|@PREFIX@|$PREFIX|g" "$(dirname "$0")/stardust_cylinder_shell.in" > "$PREFIX/libexec/stardust_cylinder_shell"
+chmod 755 "$PREFIX/libexec/stardust_cylinder_shell"
+
+export PATH="$BOOT/prefix/usr/bin:$PREFIX/bin:${PATH:-/usr/bin}"
+export STARDUST_RES_PREFIXES="$BOOT/prefix/usr/share:${STARDUST_RES_PREFIXES:-/usr/share}"
+export STARDUST_INSTANCE="$INSTANCE"
+
+# Layout daemon (dedicated sock under state so we never collide with a future live sock)
+export CYLINDER_LAYOUT_SOCK="$STATE/layout.sock"
+rm -f "$CYLINDER_LAYOUT_SOCK"
+nohup cylinder-layout >>"$LOGDIR/cylinder-layout-side.log" 2>&1 &
+echo $! > "$STATE/layout.pid"
+sleep 0.2
+if ! kill -0 "$(cat "$STATE/layout.pid")" 2>/dev/null; then
+  echo "cylinder-layout failed to start; see $LOGDIR/cylinder-layout-side.log" >&2
+  exit 1
+fi
+
+# Free Wayland display name
+WL=$(display-socket-finder wayland)
+export WAYLAND_DISPLAY="$WL"
+mkdir -p "${XDG_RUNTIME_DIR:-/tmp}/stardust-protected-panel-provider"
+
+nohup stardust-xr-wayland-service -p "$PREFIX/libexec/stardust_cylinder_shell" "$WL" \
+  >>"$LOGDIR/cylinder-wayland-side.log" 2>&1 &
+echo $! > "$STATE/side.pid"
+echo "$WL" > "$STATE/wayland-display"
+echo "$CYLINDER_LAYOUT_SOCK" > "$STATE/layout.sock.path"
+echo "$INSTANCE" > "$STATE/instance"
+
+echo "side cylinder compositor up"
+echo "  STARDUST_INSTANCE=$INSTANCE"
+echo "  WAYLAND_DISPLAY=$WL"
+echo "  layout sock=$CYLINDER_LAYOUT_SOCK"
+echo "  pids: layout=$(cat "$STATE/layout.pid") wl=$(cat "$STATE/side.pid")"
+echo "launch a test app:  $(dirname "$0")/cyl-headset-side-launch-app"
+echo "stop:               $(dirname "$0")/cyl-headset-side-stop"

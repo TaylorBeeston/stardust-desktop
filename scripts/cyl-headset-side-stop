@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Stop ONLY the side cylinder wayland-service + layout daemon started by
+# cyl-headset-side-start. Never touches live Flatland, stardust-session, wivrn, grok-bot.
+set -euo pipefail
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/cylinder-headset-side"
+stop_pidfile() {
+  local f="$1" name="$2"
+  if [[ -f "$f" ]]; then
+    local pid
+    pid=$(cat "$f" || true)
+    if [[ -n "${pid:-}" ]] && kill -0 "$pid" 2>/dev/null; then
+      # polite TERM then KILL; never kill by port / pattern
+      kill -TERM "$pid" 2>/dev/null || true
+      for _ in 1 2 3 4 5; do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.2
+      done
+      if kill -0 "$pid" 2>/dev/null; then
+        kill -KILL "$pid" 2>/dev/null || true
+      fi
+      echo "stopped $name pid=$pid"
+    else
+      echo "$name not running (stale pidfile)"
+    fi
+    rm -f "$f"
+  fi
+}
+stop_pidfile "$STATE/side.pid" "side wayland-service"
+# Children (cylinder-shell workers) die with the compositor; do not pkill.
+stop_pidfile "$STATE/layout.pid" "cylinder-layout"
+# Drop our layout sock path file; sock itself goes away with daemon
+if [[ -f "$STATE/layout.sock.path" ]]; then
+  rm -f "$(cat "$STATE/layout.sock.path")" 2>/dev/null || true
+  rm -f "$STATE/layout.sock.path"
+fi
+rm -f "$STATE/wayland-display" "$STATE/instance"
+echo "side cylinder stack stopped; live Flatland untouched"

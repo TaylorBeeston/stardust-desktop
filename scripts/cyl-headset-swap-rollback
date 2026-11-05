@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Restore Flatland panel shell + startup.sh from a cyl-headset-swap-* backup.
+# Does NOT restart stardust-session unless --restart is passed (still never
+# restarts wivrn/wayvr/GNOME).
+set -euo pipefail
+BK="${1:-}"
+if [[ -z "$BK" || ! -d "$BK" ]]; then
+  echo "usage: $0 ~/.local/share/roadie-backups/cyl-headset-swap-<ts> [--restart]" >&2
+  echo "available:" >&2
+  ls -1d "$HOME"/.local/share/roadie-backups/cyl-headset-swap-* 2>/dev/null || true
+  exit 1
+fi
+BOOT="${STARDUST_BOOTSTRAP:-$HOME/dev/open-source/stardust-bootstrap}"
+cp -a "$BK/live-stardust_panel_shell" "$HOME/.local/libexec/stardust_panel_shell"
+cp -a "$BK/live-startup.sh" "$BOOT/startup.sh"
+echo "restored Flatland panel shell + startup.sh from $BK"
+if [[ "${2:-}" == "--restart" ]]; then
+  echo "restarting stardust-session (Taylor-approved path only)" >&2
+  systemctl --user restart stardust-session.service
+fi
