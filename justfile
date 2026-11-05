@@ -29,3 +29,10 @@ install-config:
 # Headless checks: build, tests, script syntax, a throwaway install into a temp prefix
 verify:
     scripts/verify.sh
+
+
+# Scaffold only: build cylinder-shell binaries into {{prefix}}/bin. Does NOT replace
+# the Flatland-backed stardust_panel_shell until the cylinder worker accepts panels.
+install-cylinder-shell: build
+    install -Dm755 -t {{prefix}}/bin target/release/cylinder-shell target/release/cylinder-layout
+    @echo "cylinder-shell scaffold installed; point -p at {{prefix}}/bin/cylinder-shell only after PanelItemAcceptor is wired (see docs/cylinder-shell-design.md)"

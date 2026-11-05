@@ -1,0 +1,38 @@
+[package]
+name = "cylinder-shell"
+version = "0.1.0"
+edition = "2024"
+description = "Stardust XR panel shell: tile any Wayland surface on a shared cylinder (tiling-WM feel)"
+license = "MIT"
+repository = "https://github.com/TaylorBeeston/stardust-desktop"
+publish = false
+
+[[bin]]
+name = "cylinder-shell"
+path = "src/main.rs"
+
+[[bin]]
+name = "cylinder-layout"
+path = "src/bin/cylinder-layout.rs"
+
+[dependencies]
+glam = { version = "0.33.7", features = ["mint"] }
+tokio = { version = "1.22.0", default-features = false, features = ["rt", "macros", "net", "sync", "time", "io-util"] }
+serde = { version = "1.0", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2"
+gluon-ipc = "0.1.1"
+
+[dependencies.stardust-xr-fusion]
+version = "0.53.0-rc.1"
+
+[dependencies.stardust-xr-asteroids]
+version = "0.53.0-rc.1"
+git = "https://github.com/StardustXR/asteroids.git"
+
+[dependencies.stardust-xr-panels]
+git = "https://github.com/StardustXR/panel-item"
+
+[dependencies.stardust-xr-panels-asteroids]
+git = "https://github.com/StardustXR/panel-item"
