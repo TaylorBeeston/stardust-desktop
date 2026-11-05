@@ -25,6 +25,10 @@ fi
 export CYLINDER_WIDTH_PX="${CYLINDER_WIDTH_PX:-1280}"
 export CYLINDER_HEIGHT_PX="${CYLINDER_HEIGHT_PX:-720}"
 export CYLINDER_DENSITY="${CYLINDER_DENSITY:-3000}"
+# ghostty: never hand off to the GNOME single-instance (would not open on $WL)
+if [[ "$(basename "$APP")" == ghostty ]]; then
+  set -- --gtk-single-instance=false "$@"
+fi
 LOG="${XDG_RUNTIME_DIR:-/tmp}/cylinder-side-app.log"
 echo "launching $APP on $WL (instance=$STARDUST_INSTANCE)" | tee -a "$LOG"
 nohup "$APP" "$@" >>"$LOG" 2>&1 &
