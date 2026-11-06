@@ -116,6 +116,8 @@ pub struct CurvedPointerInner {
     palm_grab_u0: Option<f32>,
     palm_grab_yaw0: Option<f32>,
     palm_highlight: bool,
+    /// Quantized signature of last `set_lines` payload — skip unchanged frames.
+    last_lines_sig: u64,
 }
 
 impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
@@ -145,6 +147,7 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
             palm_grab_u0: None,
             palm_grab_yaw0: None,
             palm_highlight: false,
+            last_lines_sig: 0,
         })
     }
 
@@ -175,8 +178,8 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
         let mut viz_origin: Option<Vec3> = None;
         let mut viz_end: Option<Vec3> = None;
         let mut debug_line: Option<String> = None;
-        let mut was_grabbing = inner.reach.grabbing;
-        let mut was_armed = inner.reach.armed;
+        let was_grabbing = inner.reach.grabbing;
+        let was_armed = inner.reach.armed;
 
         for snap in input.values() {
             let InputDataType::Hand { data } = snap.input() else { continue };
@@ -202,9 +205,11 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
                 distal: Vec3::from(data.distal_axis()).to_array(),
                 ..axes
             };
-            let toward = palm_wm::toward_cylinder_content(palm.to_array(), h.radius_m);
+            // Mesh-local: toward THIS panel's surface (not same-azimuth radial — that inverted face_dot).
+            let surf = h.surface_point(0.5, 0.5, 0.0);
+            let toward = palm_wm::toward_panel_surface(palm.to_array(), surf);
             let live_dir = palm_wm::reach_direction(&axes, inner.reach.cfg());
-            let live_origin = palm_wm::reach_origin(&axes, inner.reach.cfg());
+            let live_origin = palm_wm::reach_origin_stable(&axes);
             inner.reach.step(now, dists, &axes, toward, pinch_gap, live_dir, live_origin);
 
             if palm_wm::palm_debug_enabled() {
@@ -394,16 +399,89 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
             if let Some(hit) = palm_hit {
                 viz.push(hover_cursor_ring(&h, hit, inner.reach.grabbing));
             }
+            // Drag preview: ghost panel at the hand + slot outline where it will land.
+            if inner.reach.grabbing {
+                if let Some(o) = viz_origin {
+                    let dir = inner
+                        .reach
+                        .aim()
+                        .map(|(_, d)| Vec3::from(d))
+                        .unwrap_or(Vec3::NEG_Z);
+                    viz.push(ghost_panel_at_hand(o, dir, h.width_m * 0.35, h.height_m * 0.35));
+                }
+                if let Some(hit) = palm_hit {
+                    viz.push(slot_outline_at_hit(&h, hit));
+                }
+            }
         } else if let Some((snap, hit)) = best {
             if let Some(line) = hover_line_from_input(&h, snap, hit, interacting) {
                 viz.push(line);
             }
             viz.push(hover_cursor_ring(&h, hit, interacting));
         }
-        let _ = inner.lines.set_lines(viz);
+        let sig = lines_signature(&viz);
+        if sig != inner.last_lines_sig {
+            inner.last_lines_sig = sig;
+            let _ = inner.lines.set_lines(viz);
+        }
     }
 }
 
+
+
+/// Quantize line endpoints so tiny hand jitter does not spam `set_lines` → server.
+fn lines_signature(lines: &[Line]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    lines.len().hash(&mut h);
+    for line in lines {
+        line.cyclic.hash(&mut h);
+        line.points.len().hash(&mut h);
+        for p in &line.points {
+            quant_mm(p.point.x).hash(&mut h);
+            quant_mm(p.point.y).hash(&mut h);
+            quant_mm(p.point.z).hash(&mut h);
+            quant_mm(p.thickness * 1000.0).hash(&mut h);
+        }
+    }
+    h.finish()
+}
+
+fn quant_mm(v: f32) -> i32 {
+    (v * 200.0).round() as i32 // 5 mm bins
+}
+
+/// Ghost rectangle floating at the hand while fist-dragging a panel.
+fn ghost_panel_at_hand(palm: Vec3, dir: Vec3, width_m: f32, height_m: f32) -> Line {
+    let forward = dir.normalize_or_zero();
+    let centre = palm + forward * 0.06;
+    let up = if forward.cross(Vec3::Y).length_squared() > 1e-6 {
+        forward.cross(Vec3::Y).cross(forward).normalize_or_zero()
+    } else {
+        Vec3::X
+    };
+    let right = up.cross(forward).normalize_or_zero();
+    let hw = width_m * 0.5;
+    let hh = height_m * 0.5;
+    let corners = [
+        centre + right * (-hw) + up * hh,
+        centre + right * hw + up * hh,
+        centre + right * hw + up * (-hh),
+        centre + right * (-hw) + up * (-hh),
+    ];
+    let mut line = lines::line_from_points(corners.into_iter().map(|c| c.to_array()).collect());
+    line.cyclic = true;
+    line.thickness(0.0025)
+        .color(rgba_linear!(0.25, 0.95, 0.55, 0.85))
+}
+
+/// Landing-slot outline on the cylinder at the current ray hit.
+fn slot_outline_at_hit(h: &CylinderSliceHitTest, hit: SliceHit) -> Line {
+    let _ = hit; // this panel's mesh is already the landing slot
+    crate::outline::curved_panel_border_segs(h.width_m, h.height_m, h.radius_m, 16)
+        .thickness(0.004)
+        .color(rgba_linear!(1.0, 0.85, 0.25, 0.9))
+}
 
 /// Flatland `pointer_input::line_from_input` / `line_from_point`, but the surface
 /// endpoint is the **curved** hit (not a flat z=0 clamp).

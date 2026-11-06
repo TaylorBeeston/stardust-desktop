@@ -68,6 +68,8 @@ pub struct WireBeadInner {
     palm_aim_bead: bool,
     /// Last drawn reach ray endpoints (for visual keying).
     reach_viz: Option<(Vec3, Vec3)>,
+    /// Quantized reach ray key so hand jitter does not spam set_lines.
+    reach_viz_key: Option<(i32, i32, i32, i32, i32, i32)>,
 }
 
 fn layout_key(l: &WireLayout) -> u64 {
@@ -177,6 +179,7 @@ impl<State: ValidState> CustomElement<State> for WireBead<State> {
             reach: ReachArming::new(ReachConfig::from_env()),
             palm_aim_bead: false,
             reach_viz: None,
+            reach_viz_key: None,
         })
     }
 
@@ -205,7 +208,7 @@ impl<State: ValidState> CustomElement<State> for WireBead<State> {
             .values()
             .any(|s| hand_point(s).is_some_and(|p| p.distance(bead) < BEAD_GRAB_M * 2.5));
         let now = std::time::Instant::now();
-        let mut was_grabbing = inner.reach.grabbing;
+        let was_grabbing = inner.reach.grabbing;
         let mut ray_end: Option<Vec3> = None;
         let mut palm_pt: Option<Vec3> = None;
 
@@ -230,9 +233,9 @@ impl<State: ValidState> CustomElement<State> for WireBead<State> {
             axes.palm_normal = proto_n.to_array();
             axes.palm_back = (-proto_n).to_array();
             axes.distal = Vec3::from(data.distal_axis()).to_array();
-            let toward = palm_wm::toward_cylinder_content(palm.to_array(), self.layout.radius_m);
+            let toward = palm_wm::toward_cylinder_yaw(self.layout.yaw_rad);
             let live_dir = palm_wm::reach_direction(&axes, inner.reach.cfg());
-            let live_origin = palm_wm::reach_origin(&axes, inner.reach.cfg());
+            let live_origin = palm_wm::reach_origin_stable(&axes);
             inner.reach.step(now, dists, &axes, toward, pinch_gap, live_dir, live_origin);
 
             if let Some((orig, dir)) = inner.reach.aim() {
@@ -355,8 +358,15 @@ impl<State: ValidState> CustomElement<State> for WireBead<State> {
         }
 
         let key = (layout_key(&self.layout), visual);
-        if inner.drawn_key != Some(key) || inner.reach_viz.is_some() {
+        let q = |v: f32| (v * 200.0).round() as i32; // 5 mm
+        let reach_key = inner.reach_viz.map(|(o, e)| {
+            (q(o.x), q(o.y), q(o.z), q(e.x), q(e.y), q(e.z))
+        });
+        let layout_changed = inner.drawn_key != Some(key);
+        let reach_changed = reach_key != inner.reach_viz_key;
+        if layout_changed || reach_changed {
             inner.drawn_key = Some(key);
+            inner.reach_viz_key = reach_key;
             let _ = inner.lines.set_lines(lines);
         }
     }

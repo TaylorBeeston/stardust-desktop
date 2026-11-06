@@ -183,14 +183,31 @@ impl CylinderState {
         self.reorder_slot(id, dest)
     }
 
-    /// Temporarily place `id` at an absolute yaw (radians, relative to group).
-    /// Does not re-pack neighbours — used while open-palm dragging.
+    /// Place `id` at an absolute yaw while dragging: reorder by yaw, re-pack
+    /// neighbours so a landing gap opens, then keep the floating panel at the
+    /// drag yaw (hand follow). Settle snaps it into the packed seat.
     pub fn slide_slot(&mut self, id: SlotId, yaw_rad: f32) -> Option<PanelSlot> {
-        let s = self.slots.iter_mut().find(|s| s.id == id)?;
-        if yaw_rad.is_finite() {
+        if !yaw_rad.is_finite() {
+            return self.slot(id).cloned();
+        }
+        let from = self.slot_index(id)?;
+        self.slots[from].yaw_rad = yaw_rad;
+        let dest = self
+            .slots
+            .iter()
+            .filter(|s| s.id != id && s.yaw_rad < yaw_rad)
+            .count();
+        if from != dest {
+            let slot = self.slots.remove(from);
+            let insert_at = dest.min(self.slots.len());
+            self.slots.insert(insert_at, slot);
+        }
+        self.relayout();
+        // Neighbours keep packed seats (gap at insertion index); floater follows hand.
+        if let Some(s) = self.slots.iter_mut().find(|s| s.id == id) {
             s.yaw_rad = yaw_rad;
         }
-        Some(s.clone())
+        self.slot(id).cloned()
     }
 
     /// After a slide: reorder so `id` sits among neighbours by current yaw, then re-pack.
@@ -309,6 +326,26 @@ mod tests {
         assert!(a.yaw_rad - half_arc_rad(&a, c.radius_m) >= gap_half - 1e-5);
         assert!(b.yaw_rad + half_arc_rad(&b, c.radius_m) <= -gap_half + 1e-5);
         assert!((a.width_m - 0.64).abs() < 1e-5);
+    }
+
+
+    #[test]
+    fn slide_opens_gap_for_neighbours() {
+        let mut c = CylinderState::default();
+        let a = c.assign_slot(&m(1000, 500));
+        let b = c.assign_slot(&m(1000, 500));
+        let d = c.assign_slot(&m(1000, 500));
+        let b_yaw0 = c.slot(b.id).unwrap().yaw_rad;
+        // Drag `a` past `b` toward the far left (more negative than d).
+        let target = c.slot(d.id).unwrap().yaw_rad - 0.5;
+        c.slide_slot(a.id, target);
+        assert!((c.slot(a.id).unwrap().yaw_rad - target).abs() < 1e-5);
+        // Neighbours re-packed: b should have moved from its original seat.
+        let b_yaw1 = c.slot(b.id).unwrap().yaw_rad;
+        assert!(
+            (b_yaw1 - b_yaw0).abs() > 1e-4,
+            "expected neighbour to slide for gap, b {b_yaw0} → {b_yaw1}"
+        );
     }
 
     #[test]

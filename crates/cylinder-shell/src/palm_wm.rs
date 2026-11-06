@@ -29,6 +29,8 @@ pub struct ReachConfig {
     pub arm_hold_ms: u64,
     pub distal_blend: f32,
     pub origin_distal_m: f32,
+    pub aim_smooth: f32,
+    pub curl_freeze_m: f32,
 }
 
 impl Default for ReachConfig {
@@ -44,6 +46,10 @@ impl Default for ReachConfig {
             arm_hold_ms: 150,
             distal_blend: 0.25,
             origin_distal_m: 0.02,
+            // EMA blend for live aim while armed (1 = no smooth).
+            aim_smooth: 0.28,
+            // Freeze aim once mean tip distance drops below this while armed.
+            curl_freeze_m: 0.095,
         }
     }
 }
@@ -74,6 +80,8 @@ impl ReachConfig {
         u("CYLINDER_PALM_ARM_HOLD_MS", &mut c.arm_hold_ms);
         f("CYLINDER_PALM_DISTAL_BLEND", &mut c.distal_blend);
         f("CYLINDER_PALM_ORIGIN_DISTAL_M", &mut c.origin_distal_m);
+        f("CYLINDER_PALM_AIM_SMOOTH", &mut c.aim_smooth);
+        f("CYLINDER_PALM_CURL_FREEZE_M", &mut c.curl_freeze_m);
         c
     }
 }
@@ -105,6 +113,7 @@ pub fn hand_axes_from_quat(palm_pos: [f32; 3], quat_xyzw: [f32; 4], right_hand: 
     }
 }
 
+#[allow(dead_code)]
 pub fn palm_normal_from_joints(
     wrist: [f32; 3],
     middle_meta: [f32; 3],
@@ -172,18 +181,53 @@ pub fn reach_direction(axes: &HandAxes, cfg: &ReachConfig) -> [f32; 3] {
     (n * (1.0 - b) + d * b).normalize_or_zero().to_array()
 }
 
+#[allow(dead_code)]
 pub fn reach_origin(axes: &HandAxes, cfg: &ReachConfig) -> [f32; 3] {
     (Vec3::from(axes.palm_pos) + Vec3::from(axes.distal) * cfg.origin_distal_m).to_array()
 }
 
+/// Direction from the palm toward cylinder content (forward −Z).
+///
+/// Cylinder-local: axis +Y at the user, gap/content forward = −Z. Labeled Open
+/// takes were fitted against this (`n·(−Z) ≈ +0.85`). The previous same-azimuth
+/// radial `(on_cylinder − palm)` inverted the gate (`n·toward ≈ −0.29` on Open,
+/// positive on FaceMe), so the ray only appeared when the palm faced the user.
+///
+/// For a yawed group, prefer [`toward_cylinder_yaw`]. Mesh-local panels should
+/// use [`toward_panel_surface`] instead.
 pub fn toward_cylinder_content(palm_pos: [f32; 3], cylinder_radius_m: f32) -> [f32; 3] {
-    let palm = Vec3::from(palm_pos);
-    let radial = Vec3::new(palm.x, 0.0, palm.z);
-    if radial.length_squared() < 1e-8 {
-        return [0.0, 0.0, -1.0];
+    let _ = (palm_pos, cylinder_radius_m);
+    [0.0, 0.0, -1.0]
+}
+
+/// Unit forward in cylinder frame at group yaw (gap centre).
+pub fn toward_cylinder_yaw(yaw_rad: f32) -> [f32; 3] {
+    if yaw_rad.abs() < 1e-6 {
+        return toward_cylinder_content([0.0, 0.0, 0.0], 0.7);
     }
-    let on = radial.normalize() * cylinder_radius_m.max(0.05);
-    (Vec3::new(on.x, palm.y, on.z) - palm).normalize_or_zero().to_array()
+    [yaw_rad.sin(), 0.0, -yaw_rad.cos()]
+}
+
+/// Mesh-local: panel surface centre minus palm (axis at `(0,0,+radius)`, content near z≈0).
+pub fn toward_panel_surface(palm_pos: [f32; 3], surface_point: [f32; 3]) -> [f32; 3] {
+    let dir = (Vec3::from(surface_point) - Vec3::from(palm_pos)).normalize_or_zero();
+    if dir.length_squared() < 1e-8 {
+        [0.0, 0.0, -1.0]
+    } else {
+        dir.to_array()
+    }
+}
+
+/// Stable ray origin: palm centre (finger curl must not nudge the tip).
+pub fn reach_origin_stable(axes: &HandAxes) -> [f32; 3] {
+    axes.palm_pos
+}
+
+fn lerp_dir(prev: [f32; 3], next: [f32; 3], alpha: f32) -> [f32; 3] {
+    let a = alpha.clamp(0.0, 1.0);
+    (Vec3::from(prev) * (1.0 - a) + Vec3::from(next) * a)
+        .normalize_or_zero()
+        .to_array()
 }
 
 pub fn palm_faces_content(axes: &HandAxes, toward_content: [f32; 3], cfg: &ReachConfig) -> bool {
@@ -217,6 +261,8 @@ pub struct ReachArming {
     pub grabbing: bool,
     pub locked_dir: Option<[f32; 3]>,
     pub locked_origin: Option<[f32; 3]>,
+    /// True once fingers start curling while armed — keeps pre-fist aim.
+    pub aim_frozen: bool,
     gate_since: Option<Instant>,
     cfg: ReachConfig,
 }
@@ -229,6 +275,7 @@ impl ReachArming {
             grabbing: false,
             locked_dir: None,
             locked_origin: None,
+            aim_frozen: false,
             gate_since: None,
             cfg,
         }
@@ -259,6 +306,7 @@ impl ReachArming {
             self.grabbing = false;
             self.locked_dir = None;
             self.locked_origin = None;
+            self.aim_frozen = false;
             self.gate_since = None;
             self.shape = PalmShape::Open;
             return;
@@ -269,8 +317,12 @@ impl ReachArming {
                 self.grabbing = false;
                 self.locked_dir = None;
                 self.locked_origin = None;
+                self.aim_frozen = false;
                 self.armed = false;
                 self.gate_since = None;
+            } else {
+                // Fist: keep pre-curl direction; follow palm translation only.
+                self.locked_origin = Some(live_origin);
             }
             return;
         }
@@ -279,8 +331,9 @@ impl ReachArming {
         if was_armed && self.shape == PalmShape::Fist {
             self.grabbing = true;
             self.armed = true;
+            self.aim_frozen = true;
             self.locked_dir = Some(self.locked_dir.unwrap_or(live_dir));
-            self.locked_origin = Some(self.locked_origin.unwrap_or(live_origin));
+            self.locked_origin = Some(live_origin);
             return;
         }
 
@@ -299,16 +352,32 @@ impl ReachArming {
                 let soft_up = Vec3::from(axes.distal).y <= self.cfg.max_distal_up + 0.02;
                 if !(soft_face && soft_open && soft_up) {
                     self.armed = false;
+                    self.aim_frozen = false;
                 }
             }
         }
 
         if self.armed {
-            self.locked_dir = Some(live_dir);
+            // Freeze aim as fingers curl so the fist transition can't yank the ray.
+            if mean <= self.cfg.curl_freeze_m {
+                self.aim_frozen = true;
+            }
+            if self.aim_frozen {
+                if self.locked_dir.is_none() {
+                    self.locked_dir = Some(live_dir);
+                }
+            } else {
+                let sm = match self.locked_dir {
+                    Some(prev) => lerp_dir(prev, live_dir, self.cfg.aim_smooth),
+                    None => live_dir,
+                };
+                self.locked_dir = Some(sm);
+            }
             self.locked_origin = Some(live_origin);
         } else {
             self.locked_dir = None;
             self.locked_origin = None;
+            self.aim_frozen = false;
         }
     }
 
@@ -368,7 +437,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn measured_openxr_palm_face_is_neg_y() {
+    #[test]
+    fn reach_origin_still_offsets_along_distal() {
+        let a = hand_axes_from_quat([1.0, 2.0, 3.0], [0.0, 0.0, 0.0, 1.0], true);
+        let cfg = ReachConfig { origin_distal_m: 0.1, ..ReachConfig::default() };
+        let o = Vec3::from(reach_origin(&a, &cfg));
+        // Identity quat → distal = −Z
+        assert!((o - Vec3::new(1.0, 2.0, 2.9)).length() < 1e-4);
+    }
+
+        fn measured_openxr_palm_face_is_neg_y() {
         let a = hand_axes_from_quat([0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0], true);
         assert!((Vec3::from(a.palm_normal) + Vec3::Y).length() < 1e-5);
         assert!((Vec3::from(a.palm_back) - Vec3::Y).length() < 1e-5);
@@ -606,6 +684,103 @@ mod sim_hands {
     }
 
     #[test]
+    fn toward_cylinder_content_agrees_with_recorder_forward() {
+        // Regression: same-azimuth radial inverted vs labeled Open (n·toward was negative).
+        for file in [
+            "right_open_palm_aimed_at_panel.json",
+            "left_open_palm_aimed_at_panel.json",
+        ] {
+            let samples = load_fixture(file);
+            for s in samples.as_array().unwrap() {
+                let (axes, _, _) = sample_to_axes_dists(s);
+                let toward = toward_cylinder_content(axes.palm_pos, 0.7);
+                let face = Vec3::from(axes.palm_normal).dot(Vec3::from(toward));
+                assert!(
+                    face > 0.45,
+                    "{file} open palm must face toward_cylinder_content, face_dot={face}"
+                );
+                assert!(
+                    Vec3::from(toward).dot(Vec3::from(CONTENT)) > 0.5,
+                    "{file} toward must agree with recorder −Z"
+                );
+            }
+        }
+        for file in ["right_palm_facing_me.json", "left_palm_facing_me.json"] {
+            let samples = load_fixture(file);
+            for s in samples.as_array().unwrap() {
+                let (axes, _, _) = sample_to_axes_dists(s);
+                let toward = toward_cylinder_content(axes.palm_pos, 0.7);
+                let face = Vec3::from(axes.palm_normal).dot(Vec3::from(toward));
+                assert!(
+                    face < 0.2,
+                    "{file} FaceMe must not arm via toward_cylinder_content, face_dot={face}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn toward_panel_surface_points_at_mesh_content() {
+        let palm = [0.0, 0.0, 0.35];
+        let surf = [0.0, 0.0, 0.02];
+        let t = Vec3::from(toward_panel_surface(palm, surf));
+        assert!(t.z < -0.9, "mesh-local toward panel is −Z, got {t:?}");
+    }
+
+    #[test]
+    fn curl_freezes_aim_before_fist() {
+        let samples = load_fixture("right_open_palm_aimed_at_panel.json");
+        let s = &samples.as_array().unwrap()[0];
+        let (axes, dists, pinch) = sample_to_axes_dists(s);
+        let cfg = ReachConfig::default();
+        let mut arm = ReachArming::new(cfg);
+        let t0 = Instant::now();
+        let dir = reach_direction(&axes, &cfg);
+        let origin = reach_origin_stable(&axes);
+        arm.step(t0, dists, &axes, CONTENT, pinch, dir, origin);
+        arm.step(
+            t0 + Duration::from_millis(cfg.arm_hold_ms + 20),
+            dists,
+            &axes,
+            CONTENT,
+            pinch,
+            dir,
+            origin,
+        );
+        assert!(arm.armed);
+        let locked = arm.aim().unwrap().1;
+        // Partial curl — below curl_freeze but above fist.
+        let curling = [0.09, 0.09, 0.09, 0.09];
+        arm.step(
+            t0 + Duration::from_millis(cfg.arm_hold_ms + 40),
+            curling,
+            &axes,
+            CONTENT,
+            0.05,
+            [0.0, 1.0, 0.0],
+            origin,
+        );
+        assert!(arm.aim_frozen);
+        assert!(!arm.grabbing);
+        assert_eq!(arm.aim().unwrap().1, locked);
+        // Fist: direction stays; origin may follow.
+        let fist_dists = [0.05, 0.05, 0.05, 0.05];
+        let new_origin = [origin[0] + 0.05, origin[1], origin[2]];
+        arm.step(
+            t0 + Duration::from_millis(cfg.arm_hold_ms + 60),
+            fist_dists,
+            &axes,
+            CONTENT,
+            0.05,
+            [0.0, 1.0, 0.0],
+            new_origin,
+        );
+        assert!(arm.grabbing);
+        assert_eq!(arm.aim().unwrap().1, locked);
+        assert_eq!(arm.aim().unwrap().0, new_origin);
+    }
+
+    #[test]
     fn arming_hold_and_fist_lock_from_open_fixture() {
         let samples = load_fixture("right_open_palm_aimed_at_panel.json");
         let s = &samples.as_array().unwrap()[0];
@@ -614,7 +789,7 @@ mod sim_hands {
         let mut arm = ReachArming::new(cfg);
         let t0 = Instant::now();
         let dir = reach_direction(&axes, &cfg);
-        let origin = reach_origin(&axes, &cfg);
+        let origin = reach_origin_stable(&axes);
         arm.step(t0, dists, &axes, CONTENT, pinch, dir, origin);
         assert!(!arm.armed);
         arm.step(
