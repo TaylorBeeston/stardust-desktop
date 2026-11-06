@@ -40,3 +40,7 @@ newtons_cradle 9, spin_sign 7, wrist_menu 9, host-mirror 1 (88 total in the iner
 - Tiling IPC: `MetricsChanged` from surface resize, `Swap` / `Reorder` / `Shift`, pinch-drag panel shift, optional `CYLINDER_BEAD_REANCHOR=1`.
 - Hexagon: desktop entries + `stardust-cylinder-launch`; protostar fork `TaylorBeeston/protostar` branch `roadie/cylinder-launch`.
 - Host keybind: monitor toggle only (`stardust-cylinder-toggle-mirror`); per-window capture documented as future in `docs/host-window-keybind.md`.
+
+## Overnight 2026-11-05 stage
+
+Staged release binaries + helpers under `~/.local` with backup `~/.local/share/roadie-backups/overnight-*` + ROLLBACK.md. Live layout/session **not** restarted — tiling IPC / pinch-drag need morning session recycle. Protostar fork pushed (`roadie/cylinder-launch` @ 0e2b430) but not installed over live hexagon.
