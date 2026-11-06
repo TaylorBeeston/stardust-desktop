@@ -20,7 +20,9 @@
 #        HOST_MIRROR_BIN  host-mirror binary (default: host-mirror-dmabuf, else host-mirror, on PATH)
 #        STARDUST_WAYLAND_DISPLAY (default: socket of the running stardust-xr-wayland-service)
 #        HOST_MIRROR_NO_INPUT=1 to skip uinput mouse/keyboard injection.
-#        HOST_MIRROR_REPLACE=1 to kill and relaunch a running mirror (default: skip it).
+#        HOST_MIRROR_REPLACE=1 to kill and relaunch a running mirror (default: skip).
+#        stardust-mirrors-autostart exports HOST_MIRROR_REPLACE=1 so session restarts
+#        do not keep setsid orphans from a previous server.
 # Stop:  pkill -f 'host-mirror[^ ]* --label'
 set -euo pipefail
 RUN="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"

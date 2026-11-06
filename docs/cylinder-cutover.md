@@ -36,6 +36,20 @@ scripts/stardust-cylinder-nudge radius 0.70
 scripts/cyl-headset-side-stop
 ```
 
+## Session lifetime (layout + mirrors)
+
+`startup.sh` (cutover) always stops the previous `cylinder-layout` via its pid file,
+clears `layout.sock`, and starts a fresh daemon with `CYLINDER_RADIUS_M=0.70` before
+Hello. It also SIGTERMs leftover `stardust-xr-wayland-service -p …/stardust_cylinder_shell`
+workers so a SEGV'd server cannot leave acceptors bound to a dead session.
+
+`stardust-mirrors-autostart` defaults `HOST_MIRROR_REPLACE=1` and prefers the newest
+cylinder wayland-service when choosing `WAYLAND_DISPLAY`, so Meta/eDP are relaunched
+into the new session instead of skipping setsid orphans.
+
+Monitor-dashboard Stop/Start/Restart Stardust also stop the layout daemon (pid file)
+and clear the sock on stop; start/restart leave startup.sh to create a fresh one.
+
 ## Rollback
 
 Backups: `~/.local/share/roadie-backups/cylinder-cutover-*/`

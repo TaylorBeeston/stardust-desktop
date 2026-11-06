@@ -2,7 +2,10 @@
 # ExecStartPost of stardust-session.service (cylinder cutover): wait for the cylinder
 # wayland-service socket + layout sock, launch Meta-0 + eDP-1 into it, set radius 0.70.
 # Log: $XDG_RUNTIME_DIR/stardust-mirrors-autostart.log
-# Never touches WiVRn / GNOME / grok-bot. Does not REPLACE unless HOST_MIRROR_REPLACE=1.
+# Never touches WiVRn / GNOME / grok-bot.
+# Default HOST_MIRROR_REPLACE=1 so a session restart does not skip setsid orphans
+# from the previous server (those look "already running" and then die on a stale
+# wl connection — leaving only the mirror that happened to be relaunched).
 RUN="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 exec >>"$RUN/stardust-mirrors-autostart.log" 2>&1
 echo "== $(date '+%F %T') mirrors autostart cylinder-cutover (via ${1:-unit})"
@@ -10,7 +13,8 @@ echo "== $(date '+%F %T') mirrors autostart cylinder-cutover (via ${1:-unit})"
 LAYOUT_SOCK="$RUN/stardust-cylinder/layout.sock"
 find_cyl_sock() {
   local pid cand cmd
-  for pid in $(pgrep -f 'stardust-xr-wayland-service ' | sort -n); do
+  # Newest first: prefer the acceptor this session just spawned over orphans.
+  for pid in $(pgrep -f 'stardust-xr-wayland-service ' | sort -rn); do
     cmd=$(tr '\0' ' ' </proc/$pid/cmdline 2>/dev/null || true)
     case "$cmd" in
       *stardust_cylinder_shell*)
@@ -53,6 +57,7 @@ sleep "${STARDUST_MIRRORS_SETTLE:-2}"
 
 export STARDUST_WAYLAND_DISPLAY="$sock"
 export CYLINDER_LAYOUT_SOCK="$LAYOUT_SOCK"
+export HOST_MIRROR_REPLACE="${HOST_MIRROR_REPLACE:-1}"
 # Packing: first registrant RIGHT. Flatland had eDP LEFT / Meta RIGHT → Meta first.
 export STARDUST_MIRROR_OUTPUTS="${STARDUST_MIRROR_OUTPUTS:-Meta-0 eDP-1}"
 "$HOME/.local/bin/stardust-dual-mirror-flat"
