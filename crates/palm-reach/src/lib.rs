@@ -217,7 +217,6 @@ pub fn toward_cylinder_yaw(yaw_rad: f32) -> [f32; 3] {
 }
 
 /// Mesh-local: panel surface centre minus palm (axis at `(0,0,+radius)`, content near z≈0).
-#[allow(dead_code)] // kept for off-axis helpers; live arm gate uses toward_cylinder_content (−Z)
 pub fn toward_panel_surface(palm_pos: [f32; 3], surface_point: [f32; 3]) -> [f32; 3] {
     let dir = (Vec3::from(surface_point) - Vec3::from(palm_pos)).normalize_or_zero();
     if dir.length_squared() < 1e-8 {
@@ -420,8 +419,10 @@ impl ReachArming {
         } else {
             self.gate_since = None;
             if self.armed {
+                // Sticky while tracking elevated panels (live face_dot fluttered
+                // 0.25–0.44 against −Z; toward_panel_surface is primary fix).
                 let soft_face = Vec3::from(axes.palm_normal).dot(Vec3::from(toward_content))
-                    >= self.cfg.face_dot * 0.7;
+                    >= self.cfg.face_dot * 0.5;
                 let soft_open = mean >= self.cfg.extend_min_m * 0.85;
                 let soft_up = Vec3::from(axes.distal).y <= self.cfg.max_distal_up + 0.02;
                 if !(soft_face && soft_open && soft_up) {

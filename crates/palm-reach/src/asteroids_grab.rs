@@ -4,7 +4,7 @@
 //! at reach distance; `near_yield_m` leaves contact-range grabs to pinch.
 
 use crate::{
-    self as palm_wm, GateBreak, HandAxes, PalmShape, ReachArming, ReachConfig, REACH_MAX_M,
+    self as palm_wm, GateBreak, HandAxes, PalmShape, ReachArming, ReachConfig,
 };
 use derive_where::derive_where;
 use glam::{Affine3A, Quat, Vec3};
@@ -43,7 +43,9 @@ impl<State: ValidState> PalmGrabbable<State> {
             on_change_pose: CloneFnWrapper(Arc::new(on_change)),
             grab_start: CloneFnWrapper(Arc::new(|_| ())),
             grab_stop: CloneFnWrapper(Arc::new(|_| ())),
-            capture_radius: REACH_MAX_M,
+            // Keep desk-local: a 2.5 m sphere put raised panel-aim hands deep
+            // inside every toy/hexagon field (distance sort preferred them).
+            capture_radius: 0.85,
             hit_radius: 0.12,
             near_yield_m: 0.06,
         }

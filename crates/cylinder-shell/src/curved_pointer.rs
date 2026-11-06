@@ -181,10 +181,11 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
         let was_grabbing = inner.reach.grabbing;
         let was_armed = inner.reach.armed;
 
-        // Mesh-local content forward is always −Z (input is relative to the panel
-        // handler). toward_panel_surface tilts when the palm is off-centre and was
-        // rejecting real open-palm aims; fixtures / recorder fit against −Z.
-        let toward = palm_wm::toward_cylinder_content([0.0, 0.0, 0.0], h.radius_m);
+        // Face gate aims at THIS panel's surface centre (mesh-local). Fixed −Z
+        // rejected elevated aims: live 13:05–13:14 PT reject=face×745 with
+        // right-hand face_dot med 0.28 / max 0.44 vs threshold 0.45 while the
+        // palm was raised at the mirrors; bead (horizontal) still armed.
+        let surf = h.surface_point(0.5, 0.5, 0.0);
 
         // Score every hand — the old `break` after the first Hand dropped the
         // aiming hand whenever the resting hand arrived first in the InputQueue map
@@ -196,7 +197,9 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
             axes: palm_wm::HandAxes,
             live_dir: [f32; 3],
             live_origin: [f32; 3],
+            toward: [f32; 3],
             gate: palm_wm::GateBreak,
+            ray_hit: bool,
         }
         let mut hands: Vec<HandCand> = Vec::new();
         for snap in input.values() {
@@ -227,9 +230,11 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
                     palm_wm::PalmShape::Open,
                     inner.reach.cfg(),
                 ) != palm_wm::PalmShape::Fist;
+            let toward = palm_wm::toward_panel_surface(palm.to_array(), surf);
             let gate = palm_wm::arm_gate_break(dists, &axes, toward, pinching, inner.reach.cfg());
             let live_dir = palm_wm::reach_direction(&axes, inner.reach.cfg());
             let live_origin = palm_wm::reach_origin_stable(&axes);
+            let ray_hit = mesh_local_ray_hit(&h, live_origin, live_dir).is_some();
             hands.push(HandCand {
                 right,
                 dists,
@@ -237,12 +242,22 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
                 axes,
                 live_dir,
                 live_origin,
+                toward,
                 gate,
+                ray_hit,
             });
         }
 
         let sticky = inner.reach.active_right;
         let pick = hands.iter().position(|h| sticky == Some(h.right)).or_else(|| {
+            // Prefer a hand that both passes the gate and whose ray hits THIS panel.
+            hands
+                .iter()
+                .enumerate()
+                .filter(|(_, h)| h.gate.ok && h.ray_hit)
+                .max_by(|a, b| a.1.gate.face_dot.total_cmp(&b.1.gate.face_dot))
+                .map(|(i, _)| i)
+        }).or_else(|| {
             hands
                 .iter()
                 .enumerate()
@@ -268,7 +283,7 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
                 now,
                 hand.dists,
                 &hand.axes,
-                toward,
+                hand.toward,
                 hand.pinch_gap,
                 hand.live_dir,
                 hand.live_origin,
