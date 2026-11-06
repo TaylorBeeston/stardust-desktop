@@ -47,6 +47,26 @@ just verify
 
 Add `$PREFIX/share` to `STARDUST_RES_PREFIXES` for desk-toy models.
 
+## Agent verification
+
+Skill: `.agents/skills/verify-stardust-desktop/` (also linked from `.cursor/skills/`).
+Pointers in `AGENTS.md` / `CLAUDE.md`. Headless path:
+
+```sh
+./scripts/verify/doctor.sh
+./scripts/verify.sh                  # build, test, clippy, temp install
+./scripts/verify/ipc-scenarios.sh    # Hello/Bye/Metrics/GroupGrab/SetRadius/Reanchor/Swap/Shift
+# optional: ./scripts/verify/side-harness.sh   # separate stardust server under /tmp/cyltest
+```
+
+Never point these at the live `$XDG_RUNTIME_DIR/stardust-cylinder/layout.sock`.
+Headset-only checks live in the skill's `features/headset-only.md`.
+
+Cylinder helpers (after install): `stardust-cylinder-nudge`, `stardust-cylinder-launch`,
+`stardust-cylinder-toggle-mirror`. Hexagon desktop entries for Meta-0 / eDP-1 mirrors
+are in `share/applications/`. Drop-near-belt launch needs the protostar fork
+(`TaylorBeeston/protostar@roadie/cylinder-launch`).
+
 ## Live panel path (cylinder-shell)
 
 Production `-p` is **cylinder-shell**, not Flatland. Shape:
