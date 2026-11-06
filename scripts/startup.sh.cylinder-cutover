@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+
+if ! [[ -z $WAYLAND_DISPLAY ]]; then
+export FLAT_WAYLAND_DISPLAY=$WAYLAND_DISPLAY
+fi
+
+# Cylinder-shell cutover (2026-11-05): layout daemon + cylinder -p replace Flatland.
+# Rollback: ~/.local/share/roadie-backups/cylinder-cutover-*/rollback.sh
+export PATH="${HOME}/.local/bin:${PATH:-/usr/bin}"
+mkdir -p "${XDG_RUNTIME_DIR:-/tmp}/stardust-cylinder"
+mkdir -p "${XDG_RUNTIME_DIR:-/tmp}/stardust-protected-panel-provider"
+
+# Layout owns shared cylinder state (default sock: $XDG_RUNTIME_DIR/stardust-cylinder/layout.sock)
+if [[ ! -S "${XDG_RUNTIME_DIR:-/tmp}/stardust-cylinder/layout.sock" ]]; then
+  rm -f "${XDG_RUNTIME_DIR:-/tmp}/stardust-cylinder/layout.sock"
+  cylinder-layout >>"${XDG_RUNTIME_DIR:-/tmp}/cylinder-layout.log" 2>&1 &
+  echo $! > "${XDG_RUNTIME_DIR:-/tmp}/stardust-cylinder/layout.pid"
+fi
+# Wait briefly for the sock, then set radius 0.45 before any panels register
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [[ -S "${XDG_RUNTIME_DIR:-/tmp}/stardust-cylinder/layout.sock" ]] && break
+  sleep 0.1
+done
+if [[ -S "${XDG_RUNTIME_DIR:-/tmp}/stardust-cylinder/layout.sock" ]]; then
+  CYLINDER_LAYOUT_SOCK="${XDG_RUNTIME_DIR:-/tmp}/stardust-cylinder/layout.sock" \
+    stardust-cylinder-nudge radius 0.45 \
+    >>"${XDG_RUNTIME_DIR:-/tmp}/cylinder-layout.log" 2>&1 || true
+fi
+
+export WAYLAND_DISPLAY=$(display-socket-finder wayland)
+stardust-xr-wayland-service -p "$HOME/.local/libexec/stardust_cylinder_shell" $WAYLAND_DISPLAY &
+
+export DISPLAY=$(display-socket-finder x11)
+sleep 0.5 && xwayland-satellite $DISPLAY &
+
+gravity -- 0 0.0 -0.5 hexagon_launcher &
+black-hole &
+# wrist menu (back of left wrist, tap the watch face): turns widgets/desk toys on and off and
+# restores whichever were on last time. Items: ~/.config/io.github.TaylorBeeston.WristMenu/items.txt
+wrist-menu &
+# desktop notifications (GNOME) as toasts in front of your head (D-Bus BecomeMonitor, like WayVR)
+notification-toasts &
+# Grok Bot cards (row below gaze; press one = open that bot's real chat as a mirrored, typeable panel)
+# PARKED 2026-11-04: grokbot-cards &
+
+# Disabled per Taylor during host-mirror input recovery; keep manifold/simular off.
+# WAYLAND_DISPLAY=$FLAT_WAYLAND_DISPLAY manifold | simular &

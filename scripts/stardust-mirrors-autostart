@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# ExecStartPost of stardust-session.service (cylinder cutover): wait for the cylinder
+# wayland-service socket + layout sock, launch eDP-1 + Meta-0 into it, set radius 0.45.
+# Log: $XDG_RUNTIME_DIR/stardust-mirrors-autostart.log
+# Never touches WiVRn / GNOME / grok-bot. Does not REPLACE unless HOST_MIRROR_REPLACE=1.
+RUN="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+exec >>"$RUN/stardust-mirrors-autostart.log" 2>&1
+echo "== $(date '+%F %T') mirrors autostart cylinder-cutover (via ${1:-unit})"
+
+LAYOUT_SOCK="$RUN/stardust-cylinder/layout.sock"
+# Prefer the wayland-service whose -p is the cylinder shell (not a leftover side stack).
+find_cyl_sock() {
+  local pid cand cmd
+  for pid in $(pgrep -f 'stardust-xr-wayland-service ' | sort -n); do
+    cmd=$(tr '\0' ' ' </proc/$pid/cmdline 2>/dev/null || true)
+    case "$cmd" in
+      *stardust_cylinder_shell*)
+        cand=$(tr '\0' '\n' </proc/$pid/cmdline 2>/dev/null | tail -n1)
+        if [ -S "$RUN/$cand" ]; then echo "$cand"; return 0; fi
+        ;;
+    esac
+  done
+  return 1
+}
+
+sock=""
+for _ in $(seq 1 90); do
+  if [ -S "$LAYOUT_SOCK" ]; then
+    if sock=$(find_cyl_sock); then
+      break
+    fi
+  fi
+  sleep 0.5
+done
+if [ -z "${sock:-}" ] || [ ! -S "$RUN/$sock" ]; then
+  echo "ERROR: no cylinder wayland socket after wait; refusing to launch mirrors into Flatland/unknown"
+  exit 1
+fi
+if [ ! -S "$LAYOUT_SOCK" ]; then
+  echo "ERROR: cylinder layout sock missing at $LAYOUT_SOCK"
+  exit 1
+fi
+echo "cylinder WAYLAND_DISPLAY=$sock layout=$LAYOUT_SOCK"
+
+# Reaffirm radius before panels (startup also sets it; mirrors may race)
+CYLINDER_LAYOUT_SOCK="$LAYOUT_SOCK" stardust-cylinder-nudge radius 0.45 || true
+
+sleep "${STARDUST_MIRRORS_SETTLE:-2}"
+
+export STARDUST_WAYLAND_DISPLAY="$sock"
+export CYLINDER_LAYOUT_SOCK="$LAYOUT_SOCK"
+# Explicit labels = live portal tokens (no dialog). Do NOT use cyl-* side labels here.
+export STARDUST_MIRROR_OUTPUTS="${STARDUST_MIRROR_OUTPUTS:-eDP-1 Meta-0}"
+# Avoid dual-mirror autodetection picking a stale/side socket
+"$HOME/.local/bin/stardust-dual-mirror-flat"
+
+# After both mirrors register, set radius again so GroupChanged rebakes at 0.45
+sleep 2
+CYLINDER_LAYOUT_SOCK="$LAYOUT_SOCK" stardust-cylinder-nudge radius 0.45 || true
+echo "== $(date '+%F %T') mirrors autostart done"
