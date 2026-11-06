@@ -1,6 +1,6 @@
 ---
 name: verify-stardust-desktop
-description: Verify the stardust-desktop monorepo (cylinder-shell, host-mirror, desk-toys) like a user without a headset where possible — build/test, layout IPC scenarios, optional side-stack harness. Use whenever changing cylinder layout, panel shell, mirrors, or desk toys; never drive the live stardust-session.
+description: Verify the stardust-desktop monorepo (cylinder-shell, host-mirror, desk-toys) like a user — including an isolated headless Stardust desktop with in-engine screenshots. Use whenever changing cylinder layout, panel shell, mirrors, desk toys, or the verify harness. Never drive the live stardust-session.
 ---
 
 # Verify stardust-desktop
@@ -11,69 +11,92 @@ Project-local verification for [TaylorBeeston/stardust-desktop](https://github.c
 
 | Surface | What a user touches | Drive without headset? |
 |---|---|---|
-| **cylinder-layout IPC** | Shared cylinder packing / group grab / radius | Yes — throwaway Unix sock |
-| **cylinder-shell worker** | Curved panel in VR | Partial — unit tests + side harness (needs live `stardust-0` server, still no WiVRn) |
-| **host-mirror** | Monitor as a panel | CLI `--help` + unit tests; full path needs portal + Wayland |
-| **desk-toys** | Wrist menu / cradle / spin-sign | Unit tests; XR needs headset |
-| **scripts** | dual-mirror, nudge, side start/stop | `bash -n` + dry runs |
+| **Headless flatscreen desktop** | Full stack as if in VR (panels, wire/bead, pointer) | Yes — `scripts/verify/headless-vr.sh` |
+| **cylinder-layout IPC** | Packing / grab / radius / swap | Yes — throwaway Unix sock |
+| **cylinder-shell worker** | Curved panel mesh | Yes via headless-vr; unit tests too |
+| **host-mirror** | Monitor as a panel | CLI + unit tests; portal still needs session |
+| **desk-toys** | Wrist menu / cradle / spin-sign | Unit tests; XR feel still headset |
 
-**Never** point verification at the live `$XDG_RUNTIME_DIR/stardust-cylinder/layout.sock` or replace live `-p`. Side harness uses a dedicated sock under `$XDG_STATE_HOME/cylinder-headset-side/`.
+**Never** point verification at the live `$XDG_RUNTIME_DIR/stardust-cylinder/layout.sock` or live `/run/user/$UID/stardust-server/stardust-0`. Headless-vr uses a **private** `XDG_RUNTIME_DIR` under `$XDG_STATE_HOME/cylinder-headless-vr/xdg`.
 
-## Launch
-
-From the monorepo root:
+## Launch (headless VR — preferred for visual proof)
 
 ```bash
-scripts/verify/doctor.sh          # read-only worth-driving check
-cargo test --workspace            # unit/integration (no XR)
-cargo build --release --workspace
-scripts/verify/ipc-scenarios.sh   # real cylinder-layout binary on a temp sock
-scripts/verify.sh                 # full headless suite (build/test/syntax/temp install)
+scripts/verify/doctor.sh
+scripts/verify/headless-vr.sh start          # Xvfb + flatscreen server + layout + wayland -p
+scripts/verify/headless-vr.sh launch kitty   # real Wayland client → cylinder panel
+scripts/verify/headless-vr.sh screenshot with-panel
+scripts/verify/headless-vr.sh state
+scripts/verify/headless-vr.sh scenario smoke
+scripts/verify/headless-vr.sh stop             # only kills recorded pids
 ```
 
-Optional side stack (live `stardust-session` must already be up; does **not** restart it):
+Requirements (measured on FrenchFry):
+
+- `~/.local/bin/stardust-xr-server-verify` (patched server with in-engine screenshots — see `staging/stardust-server-verify/`). Stock server works for IPC/input but X11 grabs of NVIDIA+Xvfb are black.
+- `Xvfb`, `ffmpeg`, `xdotool`, `python3`+Pillow, lavapipe optional.
+- Default `CYLVERIFY_VK=nvidia` for full stack. `lavapipe` can capture empty scenes but **crashes** when wayland clients attach (dmatex).
+
+Ready means: doctor 0 bad, headless-vr status shows server/layout/wayland UP, screenshot meta has `unique_colors_approx > 10` or `pixels_gt20 > 1000`, panel registered in layout log.
+
+Also always run:
 
 ```bash
-scripts/verify/side-harness.sh    # start side layout+wayland-service, Hello probe, stop
+cargo test --workspace
+scripts/verify/ipc-scenarios.sh
+scripts/verify.sh
 ```
-
-Ready means: doctor exits 0, `cargo test --workspace` exits 0, ipc-scenarios prints `ALL OK` and writes `.verify-evidence/ipc-*/results.json`.
 
 ## Doctor
 
-`scripts/verify/doctor.sh` — crates present, scripts executable, cargo available. Notes if a live layout sock exists (reminder: do not use it).
+`scripts/verify/doctor.sh` plus `scripts/verify/headless-vr.sh doctor`.
 
 ## Drive
 
-- **IPC:** `scripts/verify/ipc-scenarios.sh` (Hello packing, GroupGrab, SetRadius, MetricsChanged, Bye repack, Reanchor).
-- **Math/packing:** `cargo test -p cylinder-shell --lib`.
-- **Side stack:** `scripts/verify/side-harness.sh` when `stardust-server/stardust-0` exists.
-- Prefer feature files under `features/` for the recipe + proof standard.
+| Goal | Command |
+|---|---|
+| Visual frame from head pose | `headless-vr.sh screenshot <label>` → PNG under `.verify-evidence/` and `docs/verify-screenshots/` |
+| Head pose | `pose look-left\|look-right\|nudge-forward` or env `CYLVERIFY_CAM_YAW_DEG` at start |
+| Pointer select | `click [x y]` (LMB) |
+| Grab / pinch | `pinch tap\|drag [x y [dx dy]]` (RMB = grab in flatscreen) |
+| Layout state | `state` → Assigned JSON |
+| IPC packing | `ipc-scenarios.sh` (own temp sock) |
 
 ## Evidence
 
-Default dir: `.verify-evidence/<suite>-<timestamp>/` (gitignored). Survives cleanup. Proof = action + resulting state (e.g. IPC request + `results.json` + layout.log excerpt), not unit-test green alone when the map lists an IPC path.
+- `.verify-evidence/headless-vr-<ts>/` (gitignored) — PNGs + meta.json + scenario dumps
+- `docs/verify-screenshots/*.png` — sample frames committed for humans/agents to Read
+- Proof = action + resulting frame/state, not unit-test green alone
 
 ## Cleanup
 
-- IPC script traps kill of **its** layout pid and removes its temp dir; evidence stays under `.verify-evidence/`.
-- Side harness calls `cyl-headset-side-stop` (only pids it started).
-- Never `pkill` by name; never kill grok-bot / WiVRn / WayVR / GNOME / stardust-session.
+`headless-vr.sh stop` kills only pids under `$STATE/pids/`. Evidence directories are kept. Never `pkill stardust`, never kill WiVRn / WayVR / GNOME / grok-bot / live cylinder-layout.
 
 ## Helpers
 
 | Script | Role |
 |---|---|
+| `scripts/verify/headless-vr.sh` | Isolated flatscreen desktop + screenshots |
 | `scripts/verify/doctor.sh` | Worth-driving? |
 | `scripts/verify/ipc-scenarios.sh` | Layout IPC scenarios |
-| `scripts/verify/side-harness.sh` | Isolated side compositor smoke |
-| `scripts/verify.sh` | Full headless suite |
-| `scripts/stardust-cylinder-nudge` | Manual GroupGrab/SetRadius/Reanchor (and Reorder/Swap when present) |
+| `scripts/verify/side-harness.sh` | Optional side stack on **live** server (legacy) |
+| `scripts/verify.sh` | Build/test/clippy/temp install |
+| `staging/stardust-server-verify/` | Patch + README for verify server binary |
 
-## Headset-only checks (do not fake)
+## Alternatives tried (measured)
 
-Recorded in `features/headset-only.md`. Examples: concave mesh face vs eye, pointer UV on mirrored text, bead grab under WiVRn latency, pinch-drag panel swap, hexagon drop-on-cylinder, manifold keyboard into Ghostty.
+| Approach | Result |
+|---|---|
+| `stardust-xr-server -f` under Xvfb + NVIDIA | Stack runs; `ffmpeg x11grab` / ImageMagick mostly **black** (NVIDIA doesn't present to Xvfb pixmap) |
+| Same + lavapipe ICD | Empty flatscreen **capturable**; attaching wayland client → server panic in `dmatex.rs` |
+| `-s --spectator` | Needs OpenXR session — not used (would touch WiVRn/Monado) |
+| Monado simulated runtime | Not installed as a standalone user binary; WiVRn's monado must not be used for verify |
+| In-engine `Screenshot::primary_window` via `CYLVERIFY_SHOT_REQUEST` | **Works** — real frames with panels/wire/bead |
+
+## Headset-only (cannot simulate tonight)
+
+See `features/headset-only.md` — Quest lens distortion feel, WiVRn latency, true hand tracking pinch precision, hexagon grab-and-drop with controllers, passthrough.
 
 ## Maintenance
 
-After cylinder/host-mirror/desk-toy behavior changes, update the matching `features/*.md` and re-run doctor + ipc-scenarios + `cargo test --workspace`. Use `/maintain-verification-skill` for periodic honesty passes.
+After behavior changes, update `features/*.md`, refresh `docs/verify-screenshots/`, re-run `headless-vr.sh scenario smoke` + ipc-scenarios. Use `/maintain-verification-skill` for honesty passes.

@@ -44,3 +44,8 @@ newtons_cradle 9, spin_sign 7, wrist_menu 9, host-mirror 1 (88 total in the iner
 ## Overnight 2026-11-05 stage
 
 Staged release binaries + helpers under `~/.local` with backup `~/.local/share/roadie-backups/overnight-*` + ROLLBACK.md. Live layout/session **not** restarted — tiling IPC / pinch-drag need morning session recycle. Protostar fork pushed (`roadie/cylinder-launch` @ 0e2b430) but not installed over live hexagon.
+
+## Headless VR verify (2026-11-05 night)
+
+`scripts/verify/headless-vr.sh` + `stardust-xr-server-verify` (in-engine screenshots).
+Sample frames in `docs/verify-screenshots/`. Live session untouched. See skill + `staging/stardust-server-verify/`.

@@ -1,28 +1,24 @@
 # Headset-only checks
 
-Do not mark these verified from CI or headless runs.
+Do **not** mark these verified from headless-vr or CI. Everything else in the feature map should be driven via `scripts/verify/headless-vr.sh` or IPC scripts first.
 
 ## Sub-features
 
-- `concave-face` — mesh faces the user correctly.
-- `pointer-uv` — cursor lands on the texel the eye sees (mirrored text).
-- `bead-grab-latency` — group grab under WiVRn.
-- `pinch-swap` — pinch-drag panel to swap with neighbour (when implemented).
-- `hexagon-cylinder-drop` — release hexagon app on cylinder → panel there.
-- `manifold-keys` — typing into Ghostty on a cylinder panel.
+- `quest-lens-feel` — optical distortion / IPD comfort (not a PNG property).
+- `wivrn-latency` — bead grab and pointer lag under WiVRn to Quest.
+- `true-hand-pinch` — controller/hand tracking pinch precision vs flatscreen RMB grab.
+- `hexagon-controller-drop` — grab hexagon item with controller and release on cylinder belt.
+- `passthrough-hands` — transparent hands over real world (`--transparent-hands`).
 
 ## How to get to it (user POV)
 
-- Wear Quest with WiVRn; live stardust-session on cylinder-shell.
+Wear Quest with WiVRn; live stardust-session on cylinder-shell.
 
 ## Driving it with headset
 
-Preconditions:
-
-- Taylor available with headset; no automated stand-in.
-
-- Walk the list; record pass/fail in the morning notes with measured observations.
+Taylor available; walk the list; record pass/fail with measured notes.
 
 ## Gotchas
 
-- Side harness without WiVRn cannot prove UV or bead feel.
+- Headless-vr flatscreen RMB grab is a stand-in, not proof of hand tracking.
+- In-engine PNGs prove geometry/layout/visibility, not WiVRn codec or comfort.

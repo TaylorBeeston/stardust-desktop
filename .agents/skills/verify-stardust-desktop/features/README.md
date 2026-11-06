@@ -23,3 +23,4 @@ Maintained source for verifying user-facing behavior. Read this index, then the 
 - [Host mirror](./host-mirror.md) — ScreenCast → Stardust panel.
 - [Desk toys / wrist menu](./desk-toys.md) — cradle, spin-sign, wrist place-here.
 - [Headset-only checks](./headset-only.md) — must wait for Quest / WiVRn.
+- `headless-vr.md` — isolated flatscreen desktop + screenshots for agents

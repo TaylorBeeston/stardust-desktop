@@ -1,0 +1,77 @@
+diff --git a/src/bevy_int/flatscreen_cam.rs b/src/bevy_int/flatscreen_cam.rs
+index 0b98074..21d09ad 100644
+--- a/src/bevy_int/flatscreen_cam.rs
++++ b/src/bevy_int/flatscreen_cam.rs
+@@ -38,6 +38,29 @@ impl Plugin for FlatscreenCamPlugin {
+ pub struct FlatscreenCam;
+ 
+ fn spawn_cam(mut cmds: Commands) {
++	// Optional verify viewpoint: CYLVERIFY_CAM_YAW_DEG / CYLVERIFY_CAM_PITCH_DEG / CYLVERIFY_CAM_POS=x,y,z
++	let yaw = std::env::var("CYLVERIFY_CAM_YAW_DEG")
++		.ok()
++		.and_then(|s| s.parse::<f32>().ok())
++		.unwrap_or(0.0)
++		.to_radians();
++	let pitch = std::env::var("CYLVERIFY_CAM_PITCH_DEG")
++		.ok()
++		.and_then(|s| s.parse::<f32>().ok())
++		.unwrap_or(0.0)
++		.to_radians();
++	let pos = std::env::var("CYLVERIFY_CAM_POS")
++		.ok()
++		.and_then(|s| {
++			let mut it = s.split(',');
++			Some(Vec3::new(
++				it.next()?.parse().ok()?,
++				it.next()?.parse().ok()?,
++				it.next()?.parse().ok()?,
++			))
++		})
++		.unwrap_or(Vec3::ZERO);
++	let rot = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch);
+ 	cmds.spawn((
+ 		FlatscreenCam,
+ 		Name::new("Flatscreen Camera"),
+@@ -45,7 +68,11 @@ fn spawn_cam(mut cmds: Commands) {
+ 			fov: 100f32.to_radians(),
+ 			..Default::default()
+ 		}),
+-		Transform::from_xyz(0.0, 0.0, 0.0),
++		Transform {
++			translation: pos,
++			rotation: rot,
++			..Default::default()
++		},
+ 	));
+ }
+ 
+diff --git a/src/bevy_int/mod.rs b/src/bevy_int/mod.rs
+index 5cc4330..2090fb3 100644
+--- a/src/bevy_int/mod.rs
++++ b/src/bevy_int/mod.rs
+@@ -4,3 +4,4 @@ pub mod entity_handle;
+ pub mod flatscreen_cam;
+ pub mod spectator_cam;
+ pub mod tracking_offset;
++pub mod verify_shot;
+diff --git a/src/main.rs b/src/main.rs
+index 236a243..a2ad73d 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -38,7 +38,7 @@ use bevy::{
+ 	winit::{WakeUp, WinitPlugin},
+ };
+ use bevy_dmabuf::import::DmabufImportPlugin;
+-use bevy_int::{flatscreen_cam::FlatscreenCamPlugin, spectator_cam::SpectatorCameraPlugin};
++use bevy_int::{flatscreen_cam::FlatscreenCamPlugin, spectator_cam::SpectatorCameraPlugin, verify_shot::VerifyShotPlugin};
+ use bevy_mod_openxr::{
+ 	action_set_attaching::OxrActionAttachingPlugin,
+ 	action_set_syncing::OxrActionSyncingPlugin,
+@@ -364,6 +364,7 @@ fn bevy_loop(
+ 				.add(bevy::text::TextPlugin)
+ 				.add(bevy::ui::UiPlugin::default())
+ 				.add(FlatscreenCamPlugin)
++				.add(VerifyShotPlugin)
+ 				.add(FlatscreenInputPlugin)
+ 		} else {
+ 			plugins

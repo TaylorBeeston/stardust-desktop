@@ -55,6 +55,7 @@ Pointers in `AGENTS.md` / `CLAUDE.md`. Headless path:
 ```sh
 ./scripts/verify/doctor.sh
 ./scripts/verify.sh                  # build, test, clippy, temp install
+./scripts/verify/headless-vr.sh start   # isolated flatscreen desktop + screenshots
 ./scripts/verify/ipc-scenarios.sh    # Hello/Bye/Metrics/GroupGrab/SetRadius/Reanchor/Swap/Shift
 # optional: ./scripts/verify/side-harness.sh   # separate stardust server under /tmp/cyltest
 ```

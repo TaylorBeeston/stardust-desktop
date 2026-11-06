@@ -1,13 +1,12 @@
-target/
-*.token
-**/*.token
-# portal restore tokens / per-machine state (never commit)
-.local/
-state/host-mirror/
-*.secret
+
 .env
 .env.*
+.local/
 *.log
-
+# portal restore tokens / per-machine state (never commit)
+*.secret
+state/host-mirror/
+target/
+**/*.token
+*.token
 .verify-evidence/
-
