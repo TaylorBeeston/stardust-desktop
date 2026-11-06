@@ -3,7 +3,7 @@
 //! ## Measured (protocol + labeled JSONL)
 //! - Palm **face** normal = quat × **−Y** (`Hand::palm_normal`); agrees with wrist→middle ×
 //!   index→little (sign by chirality) at n·jn ≈ 0.97. Palm **back** = +Y (9564d90 bug).
-//! - Activation (held-out 30%): Open palm arms 100%; FaceMe / Back / Relaxed / Point / Pinch 0%.
+//! - Activation (fixtures + JSONL open takes): Open arms 100%; FaceMe/Back/Relaxed/Point/Pinch <5% after 2026-11-06 margin loosen.
 //! - Grab curl: mean tip→palm ≤ 0.062 catches Fist + Loose fist; Relaxed/Pinch/Point stay out
 //!   when fist is classified **before** pinch.
 //!
@@ -38,14 +38,18 @@ pub struct ReachConfig {
 impl Default for ReachConfig {
     fn default() -> Self {
         // Fitted 2026-11-06 from right+left labeled takes.
+        // Loosened 2026-11-06 from live flake + labeled JSONL margins (still
+        // rejects fixture Relaxed/Back/FaceMe/Point at <5%):
+        // open tip_mean ≥0.113 / tip_min ≥0.095 / face·(−Z) ≥0.52 / distal.y ≤0.905;
+        // back-of-hand distal.y ≥ 0.929 must stay rejected.
         Self {
-            extend_m: 0.112,
-            extend_min_m: 0.092,
+            extend_m: 0.105,
+            extend_min_m: 0.090,
             fist_m: 0.062,
             fist_open_m: 0.090,
-            face_dot: 0.50,
-            max_distal_up: 0.915,
-            arm_hold_ms: 150,
+            face_dot: 0.45,
+            max_distal_up: 0.918,
+            arm_hold_ms: 100,
             distal_blend: 0.25,
             origin_distal_m: 0.02,
             // EMA blend for live aim while armed (1 = no smooth).
@@ -213,6 +217,7 @@ pub fn toward_cylinder_yaw(yaw_rad: f32) -> [f32; 3] {
 }
 
 /// Mesh-local: panel surface centre minus palm (axis at `(0,0,+radius)`, content near z≈0).
+#[allow(dead_code)] // kept for off-axis helpers; live arm gate uses toward_cylinder_content (−Z)
 pub fn toward_panel_surface(palm_pos: [f32; 3], surface_point: [f32; 3]) -> [f32; 3] {
     let dir = (Vec3::from(surface_point) - Vec3::from(palm_pos)).normalize_or_zero();
     if dir.length_squared() < 1e-8 {
@@ -250,12 +255,52 @@ pub fn arm_gate_raw(
     pinching: bool,
     cfg: &ReachConfig,
 ) -> bool {
-    if pinching {
-        return false;
+    arm_gate_break(dists, axes, toward_content, pinching, cfg).ok
+}
+
+/// Per-gate breakdown for live diagnosis (extend / face / distal / pinch).
+#[derive(Debug, Clone, Copy)]
+pub struct GateBreak {
+    pub ok: bool,
+    pub pinching: bool,
+    pub extend: bool,
+    pub face: bool,
+    pub distal: bool,
+    pub mean: f32,
+    pub tip_min: f32,
+    pub face_dot: f32,
+    pub distal_y: f32,
+}
+
+pub fn arm_gate_break(
+    dists: [f32; 4],
+    axes: &HandAxes,
+    toward_content: [f32; 3],
+    pinching: bool,
+    cfg: &ReachConfig,
+) -> GateBreak {
+    let mean = mean_tip_distance(dists);
+    let tip_min = dists
+        .iter()
+        .copied()
+        .min_by(|a, b| a.total_cmp(b))
+        .unwrap_or(0.0);
+    let face_dot = Vec3::from(axes.palm_normal).dot(Vec3::from(toward_content));
+    let distal_y = Vec3::from(axes.distal).y;
+    let extend = fingers_extended(dists, cfg);
+    let face = palm_faces_content(axes, toward_content, cfg);
+    let distal = distal_not_too_up(axes, cfg);
+    GateBreak {
+        ok: !pinching && extend && face && distal,
+        pinching,
+        extend,
+        face,
+        distal,
+        mean,
+        tip_min,
+        face_dot,
+        distal_y,
     }
-    fingers_extended(dists, cfg)
-        && palm_faces_content(axes, toward_content, cfg)
-        && distal_not_too_up(axes, cfg)
 }
 
 #[derive(Debug, Clone)]
@@ -267,6 +312,8 @@ pub struct ReachArming {
     pub locked_origin: Option<[f32; 3]>,
     /// True while curl-transition freeze is active.
     pub aim_frozen: bool,
+    /// Sticky hand while armed/grabbing so the other hand cannot steal the ray.
+    pub active_right: Option<bool>,
     /// Wall time when curl freeze ends (grab aim unlocks after this).
     freeze_until: Option<Instant>,
     gate_since: Option<Instant>,
@@ -282,6 +329,7 @@ impl ReachArming {
             locked_dir: None,
             locked_origin: None,
             aim_frozen: false,
+            active_right: None,
             freeze_until: None,
             gate_since: None,
             cfg,
@@ -316,6 +364,7 @@ impl ReachArming {
             self.aim_frozen = false;
             self.freeze_until = None;
             self.gate_since = None;
+            self.active_right = None;
             self.shape = PalmShape::Open;
             return;
         }
@@ -403,6 +452,9 @@ impl ReachArming {
             self.locked_dir = None;
             self.locked_origin = None;
             self.aim_frozen = false;
+            if !self.grabbing {
+                self.active_right = None;
+            }
         }
     }
 

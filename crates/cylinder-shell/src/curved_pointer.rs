@@ -181,6 +181,24 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
         let was_grabbing = inner.reach.grabbing;
         let was_armed = inner.reach.armed;
 
+        // Mesh-local content forward is always −Z (input is relative to the panel
+        // handler). toward_panel_surface tilts when the palm is off-centre and was
+        // rejecting real open-palm aims; fixtures / recorder fit against −Z.
+        let toward = palm_wm::toward_cylinder_content([0.0, 0.0, 0.0], h.radius_m);
+
+        // Score every hand — the old `break` after the first Hand dropped the
+        // aiming hand whenever the resting hand arrived first in the InputQueue map
+        // (live: inputs=2, shape=Open, armed=false for long stretches).
+        struct HandCand {
+            right: bool,
+            dists: [f32; 4],
+            pinch_gap: f32,
+            axes: palm_wm::HandAxes,
+            live_dir: [f32; 3],
+            live_origin: [f32; 3],
+            gate: palm_wm::GateBreak,
+        }
+        let mut hands: Vec<HandCand> = Vec::new();
         for snap in input.values() {
             let InputDataType::Hand { data } = snap.input() else { continue };
             let palm = Vec3::from(data.palm.pose.position);
@@ -193,11 +211,9 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
             let dists = palm_wm::finger_tip_distances(palm.to_array(), tips);
             let pinch_gap = Vec3::from(data.thumb.tip.pose.position)
                 .distance(Vec3::from(data.index.tip.pose.position));
-            let _pinching = pinch_gap < palm_wm::PINCH_M;
             let right = matches!(data.chirality, stardust_xr_fusion::suis::Chirality::Right);
             let o = data.palm.pose.orientation;
             let axes = palm_wm::hand_axes_from_quat(palm.to_array(), [o.v.x, o.v.y, o.v.z, o.s], right);
-            // Prefer protocol palm_normal if available (same as −Y).
             let proto_n = Vec3::from(data.palm_normal());
             let axes = palm_wm::HandAxes {
                 palm_normal: proto_n.to_array(),
@@ -205,30 +221,96 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
                 distal: Vec3::from(data.distal_axis()).to_array(),
                 ..axes
             };
-            // Mesh-local: toward THIS panel's surface (not same-azimuth radial — that inverted face_dot).
-            let surf = h.surface_point(0.5, 0.5, 0.0);
-            let toward = palm_wm::toward_panel_surface(palm.to_array(), surf);
+            let pinching = pinch_gap < palm_wm::PINCH_M
+                && palm_wm::classify_curl(
+                    palm_wm::mean_tip_distance(dists),
+                    palm_wm::PalmShape::Open,
+                    inner.reach.cfg(),
+                ) != palm_wm::PalmShape::Fist;
+            let gate = palm_wm::arm_gate_break(dists, &axes, toward, pinching, inner.reach.cfg());
             let live_dir = palm_wm::reach_direction(&axes, inner.reach.cfg());
             let live_origin = palm_wm::reach_origin_stable(&axes);
-            inner.reach.step(now, dists, &axes, toward, pinch_gap, live_dir, live_origin);
+            hands.push(HandCand {
+                right,
+                dists,
+                pinch_gap,
+                axes,
+                live_dir,
+                live_origin,
+                gate,
+            });
+        }
 
-            if palm_wm::palm_debug_enabled() {
+        let sticky = inner.reach.active_right;
+        let pick = hands.iter().position(|h| sticky == Some(h.right)).or_else(|| {
+            hands
+                .iter()
+                .enumerate()
+                .filter(|(_, h)| h.gate.ok)
+                .max_by(|a, b| a.1.gate.face_dot.total_cmp(&b.1.gate.face_dot))
+                .map(|(i, _)| i)
+        }).or_else(|| {
+            // Soft fallback: most content-facing extended-ish hand so hold can start.
+            hands
+                .iter()
+                .enumerate()
+                .filter(|(_, h)| h.gate.extend && !h.gate.pinching)
+                .max_by(|a, b| a.1.gate.face_dot.total_cmp(&b.1.gate.face_dot))
+                .map(|(i, _)| i)
+        }).or_else(|| hands.iter().enumerate().max_by(|a, b| a.1.gate.face_dot.total_cmp(&b.1.gate.face_dot)).map(|(i, _)| i));
+
+        if let Some(i) = pick {
+            let hand = &hands[i];
+            if inner.reach.armed || inner.reach.grabbing || hand.gate.ok {
+                inner.reach.active_right = Some(hand.right);
+            }
+            inner.reach.step(
+                now,
+                hand.dists,
+                &hand.axes,
+                toward,
+                hand.pinch_gap,
+                hand.live_dir,
+                hand.live_origin,
+            );
+
+            {
                 use std::sync::atomic::{AtomicU32, Ordering};
                 static N: AtomicU32 = AtomicU32::new(0);
-                if N.fetch_add(1, Ordering::Relaxed) % 30 == 0 {
-                    let face = Vec3::from(axes.palm_normal).dot(Vec3::from(toward));
+                let every = if palm_wm::palm_debug_enabled() { 30 } else { 90 };
+                if N.fetch_add(1, Ordering::Relaxed) % every == 0 {
+                    let g = hand.gate;
+                    let reject = if g.ok {
+                        "none"
+                    } else if g.pinching {
+                        "pinch"
+                    } else if !g.extend {
+                        "extend"
+                    } else if !g.face {
+                        "face"
+                    } else if !g.distal {
+                        "distal"
+                    } else {
+                        "?"
+                    };
                     debug_line = Some(format!(
-                        "palm_dbg right={right} dists={dists:?} mean={:.3} pinch={:.3} n={:?} back={:?} distal={:?} toward={:?} face_dot={:.2} armed={} grab={} shape={:?}",
-                        palm_wm::mean_tip_distance(dists),
-                        pinch_gap,
-                        axes.palm_normal,
-                        axes.palm_back,
-                        axes.distal,
-                        toward,
-                        face,
+                        "palm_gate n_hands={} pick_right={} reject={reject} ok={} extend={} face={} distal={} pinch={} mean={:.3} tip_min={:.3} face_dot={:.2} distal_y={:.2} armed={} grab={} shape={:?} sticky={:?} hit={}",
+                        hands.len(),
+                        hand.right,
+                        g.ok,
+                        g.extend,
+                        g.face,
+                        g.distal,
+                        g.pinching,
+                        g.mean,
+                        g.tip_min,
+                        g.face_dot,
+                        g.distal_y,
                         inner.reach.armed,
                         inner.reach.grabbing,
                         inner.reach.shape,
+                        inner.reach.active_right,
+                        inner.reach.aim().and_then(|(o, d)| mesh_local_ray_hit(&h, o, d)).is_some(),
                     ));
                 }
             }
@@ -242,7 +324,6 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
                     viz_end = Some(Vec3::from(orig) + Vec3::from(dir) * 0.8);
                 }
             }
-            break;
         }
         if let Some(line) = debug_line {
             tracing::info!("{line}");
