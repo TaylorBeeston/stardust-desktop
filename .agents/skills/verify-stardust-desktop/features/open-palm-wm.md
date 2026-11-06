@@ -1,22 +1,18 @@
-# Open-palm window management
+# Open-palm window management + reach ray
 
-## Sub-features
+## Behaviour
+- **Open palm** aims a visible reach ray; Hand → panel mouse is **suppressed** (pinch still clicks).
+- **Fist** grabs whatever the ray hits: panel (Slide/Settle IPC) or cylinder bead (GroupGrab at distance).
+- **Open** again releases / settles.
+- Hysteresis on openness; pinch aborts reach and restores click.
 
-- `highlight` — open palm ray hits panel → outline/highlight
-- `fist-slide` — curl to fist → panel follows along cylinder (Slide IPC)
-- `settle` — open hand → nearest slot (Settle → Reorder+repack)
-- `pinch-is-click` — pinch does not trigger palm WM (hysteresis)
+## Drive without headset
+```bash
+scripts/verify/palm-reach-regression.sh
+# or:
+cargo test -p cylinder-shell --lib palm_wm
+cargo test -p cylinder-shell --lib sim_hands
+```
 
-## How to get to it (user POV)
-
-In headset: open palm toward a panel, fist to grab, move, open to drop.
-
-## Driving it with harness
-
-- Unit: `cargo test -p cylinder-shell --lib palm_wm`
-- IPC: `scripts/verify/ipc-scenarios.sh` includes `slide_settle`
-- Pinch-drag swap removed (collided with click)
-
-## Gotchas
-
-- Real hand tracking feel remains headset-only; flatscreen has no articulated hands.
+## Headset check
+Open palm toward a mirror: ray visible, mouse must NOT move. Fist: panel slides. Aim at distant bead (even “inside desk”): fist moves cylinder. Pinch still clicks.

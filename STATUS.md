@@ -56,3 +56,9 @@ Sample frames in `docs/verify-screenshots/`. Live session untouched. See skill +
 - Toggle: clean in/out state machine (no foreground exec).
 - Open-palm WM replaces pinch-drag swap (Slide/Settle IPC); pinch stays click.
 - Staged under `~/.local` with `roadie-backups/headset-fixes-*`. **Needs stardust-session restart** for layout Slide/Settle + palm in workers.
+
+## Palm reach (2026-11-06)
+
+- **Root cause (measured):** Hand XR input reached `cylinder-shell`; open palm still drove `on_motion` → host-mirror mouse. Palm WM ray rarely hit; bead grab was near-field only.
+- **Fix:** Open palm / fist-grab suppresses Hand→mouse; visible reach ray; fist grabs panel (Slide/Settle) or distant bead (GroupGrab). Pinch still clicks.
+- **Verify:** `scripts/verify/palm-reach-regression.sh` (sim_hands + palm_wm). Needs session restart to pick up staged `cylinder-shell`.

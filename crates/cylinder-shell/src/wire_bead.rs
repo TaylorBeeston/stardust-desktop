@@ -3,6 +3,7 @@
 //! Parent of the Lines Spatial is `client.root()` (cylinder frame), not the panel
 //! Entity — same frame as [`crate::panel::SlotPlacement`].
 
+use crate::palm_wm::{self, PalmShape};
 use crate::wire::{
     bead_polylines, grab_frame_deltas, ring_polylines, BeadVisualState, WireLayout, BEAD_GRAB_M,
     BEAD_THICKNESS, RING_THICKNESS,
@@ -63,6 +64,12 @@ pub struct WireBeadInner {
     /// Last hand point while grabbing (cylinder frame), for per-frame deltas.
     last_grab_pt: Option<Vec3>,
     drawn_key: Option<(u64, BeadVisualState)>,
+    /// Open-palm reach state (fist grabs bead at distance via ray).
+    palm_shape: PalmShape,
+    palm_aim_bead: bool,
+    palm_reach_grab: bool,
+    /// Last drawn reach ray endpoints (for visual keying).
+    reach_viz: Option<(Vec3, Vec3)>,
 }
 
 fn layout_key(l: &WireLayout) -> u64 {
@@ -169,6 +176,10 @@ impl<State: ValidState> CustomElement<State> for WireBead<State> {
             grab: SingleAction::default(),
             last_grab_pt: None,
             drawn_key: Some((layout_key(&self.layout), 0)),
+            palm_shape: PalmShape::Open,
+            palm_aim_bead: false,
+            palm_reach_grab: false,
+            reach_viz: None,
         })
     }
 
@@ -197,52 +208,169 @@ impl<State: ValidState> CustomElement<State> for WireBead<State> {
             .values()
             .any(|s| hand_point(s).is_some_and(|p| p.distance(bead) < BEAD_GRAB_M * 2.5));
 
-        inner.grab.update(
-            true,
-            &inner.input,
-            |s| hand_point(s).is_some_and(on_bead),
-            pinch_or_grab,
-        );
+        // --- Palm reach: open aims, fist grabs bead at distance ---
+        let mut pinching = false;
+        let mut shape_now = inner.palm_shape;
+        let mut aim = false;
+        let mut palm_pt: Option<Vec3> = None;
+        let mut ray_end: Option<Vec3> = None;
+        for snap in inner.input.input().values() {
+            let InputDataType::Hand { data } = snap.input() else { continue };
+            let palm = Vec3::from(data.palm.pose.position);
+            palm_pt = Some(palm);
+            let tips = [
+                Vec3::from(data.index.tip.pose.position).to_array(),
+                Vec3::from(data.middle.tip.pose.position).to_array(),
+                Vec3::from(data.ring.tip.pose.position).to_array(),
+                Vec3::from(data.little.tip.pose.position).to_array(),
+            ];
+            let openness = palm_wm::hand_openness(palm.to_array(), tips);
+            let pinch_gap = Vec3::from(data.thumb.tip.pose.position)
+                .distance(Vec3::from(data.index.tip.pose.position));
+            pinching = pinch_gap < palm_wm::PINCH_M;
+            shape_now = palm_wm::classify_palm(openness, inner.palm_shape);
+            let o = data.palm.pose.orientation;
+            let dirs = palm_wm::reach_ray_dirs(
+                palm.to_array(),
+                [o.v.x, o.v.y, o.v.z, o.s],
+                self.layout.radius_m,
+            );
+            for d in dirs {
+                if palm_wm::ray_hits_bead(palm.to_array(), d, bead.to_array(), palm_wm::BEAD_RAY_HIT_M) {
+                    aim = true;
+                    if let Some((closest, _)) = palm_wm::ray_closest_point(palm.to_array(), d, bead.to_array()) {
+                        ray_end = Some(Vec3::from(closest));
+                    }
+                    break;
+                }
+            }
+            if ray_end.is_none() {
+                let dir = Vec3::from(dirs[0]).normalize_or_zero();
+                ray_end = Some(palm + dir * 0.8);
+            }
+            break;
+        }
+        inner.palm_shape = shape_now;
 
-        let acting = inner.grab.actor_acting();
+        if pinching {
+            // Pinch prefers near-bead SingleAction path below; cancel reach grab.
+            if inner.palm_reach_grab {
+                inner.palm_reach_grab = false;
+                inner.last_grab_pt = None;
+                (self.on_grab_end.0)(state);
+                tracing::info!("cylinder bead palm-reach cancelled by pinch");
+            }
+            inner.palm_aim_bead = false;
+        } else {
+            match (inner.palm_reach_grab, shape_now, aim || inner.palm_aim_bead) {
+                (false, PalmShape::Fist, true) => {
+                    inner.palm_reach_grab = true;
+                    inner.palm_aim_bead = true;
+                    inner.last_grab_pt = palm_pt.or(ray_end);
+                    tracing::info!(bead = ?bead, "cylinder bead palm-reach grabbed");
+                }
+                (true, PalmShape::Fist, _) => {
+                    if let Some(p) = palm_pt.or(ray_end) {
+                        if let Some(prev) = inner.last_grab_pt {
+                            let (dyaw, dh) = grab_frame_deltas(prev, p);
+                            if dyaw.abs() > 1e-6 || dh.abs() > 1e-6 {
+                                (self.on_grab_delta.0)(state, dyaw, dh);
+                            }
+                        }
+                        inner.last_grab_pt = Some(p);
+                    }
+                }
+                (true, PalmShape::Open, _) => {
+                    inner.palm_reach_grab = false;
+                    inner.last_grab_pt = None;
+                    (self.on_grab_end.0)(state);
+                    tracing::info!("cylinder bead palm-reach released");
+                }
+                _ => {}
+            }
+            inner.palm_aim_bead = aim && shape_now == PalmShape::Open && !inner.palm_reach_grab;
+        }
+
+        // Direct near-bead pinch/grab (unchanged), suppressed while palm-reach owns the bead.
+        if !inner.palm_reach_grab {
+            inner.grab.update(
+                true,
+                &inner.input,
+                |s| hand_point(s).is_some_and(on_bead),
+                pinch_or_grab,
+            );
+        } else {
+            // Force-release direct grab if it was acting.
+            if inner.grab.actor_acting() {
+                // SingleAction has no force stop; just ignore deltas while reach owns.
+            }
+        }
+
+        let acting = inner.palm_reach_grab || inner.grab.actor_acting();
         let visual: BeadVisualState = if acting {
             2
-        } else if near {
+        } else if near || inner.palm_aim_bead {
             1
         } else {
             0
         };
 
-        if inner.grab.actor_started() {
-            inner.last_grab_pt = inner.grab.actor().and_then(|s| hand_point(s));
-            tracing::info!(bead = ?bead, "cylinder bead grabbed");
-        }
-        if acting {
-            if let Some(p) = inner.grab.actor().and_then(|s| hand_point(s)) {
-                if let Some(prev) = inner.last_grab_pt {
-                    let (dyaw, dh) = grab_frame_deltas(prev, p);
-                    if dyaw.abs() > 1e-6 || dh.abs() > 1e-6 {
-                        (self.on_grab_delta.0)(state, dyaw, dh);
+        if !inner.palm_reach_grab {
+            if inner.grab.actor_started() {
+                inner.last_grab_pt = inner.grab.actor().and_then(|s| hand_point(s));
+                tracing::info!(bead = ?bead, "cylinder bead grabbed");
+            }
+            if inner.grab.actor_acting() {
+                if let Some(p) = inner.grab.actor().and_then(|s| hand_point(s)) {
+                    if let Some(prev) = inner.last_grab_pt {
+                        let (dyaw, dh) = grab_frame_deltas(prev, p);
+                        if dyaw.abs() > 1e-6 || dh.abs() > 1e-6 {
+                            (self.on_grab_delta.0)(state, dyaw, dh);
+                        }
                     }
+                    inner.last_grab_pt = Some(p);
                 }
-                inner.last_grab_pt = Some(p);
+            }
+            if inner.grab.actor_stopped() {
+                inner.last_grab_pt = None;
+                tracing::info!("cylinder bead released");
+                (self.on_grab_end.0)(state);
             }
         }
-        if inner.grab.actor_stopped() {
-            inner.last_grab_pt = None;
-            tracing::info!("cylinder bead released");
-            // Flatland re-anchored the *axis* under the head. Our Reanchor instead
-            // snaps the gap to face HMD yaw — different semantics, so we do not
-            // auto-call it here. Use `stardust-cylinder-nudge reanchor` to recenter.
-            (self.on_grab_end.0)(state);
+
+        let mut lines = build_wire_lines(&self.layout, visual);
+        if (inner.palm_aim_bead || inner.palm_reach_grab) && !pinching {
+            if let (Some(o), Some(e)) = (palm_pt, ray_end) {
+                let col = if inner.palm_reach_grab {
+                    rgba_linear!(0.2, 0.95, 0.55, 0.95)
+                } else {
+                    rgba_linear!(0.35, 0.85, 1.0, 0.9)
+                };
+                lines.push(Line {
+                    points: vec![
+                        LinePoint { point: o.into(), thickness: 0.004, color: col },
+                        LinePoint {
+                            point: e.into(),
+                            thickness: 0.002,
+                            color: rgba_linear!(0.35, 0.85, 1.0, 0.0),
+                        },
+                    ],
+                    cyclic: false,
+                });
+                inner.reach_viz = Some((o, e));
+            }
+        } else {
+            inner.reach_viz = None;
         }
 
         let key = (layout_key(&self.layout), visual);
-        if inner.drawn_key != Some(key) {
+        // Always refresh when reach ray present (endpoints move every frame).
+        if inner.drawn_key != Some(key) || inner.reach_viz.is_some() {
             inner.drawn_key = Some(key);
-            let _ = inner.lines.set_lines(build_wire_lines(&self.layout, visual));
+            let _ = inner.lines.set_lines(lines);
         }
     }
+
 }
 
 #[cfg(test)]

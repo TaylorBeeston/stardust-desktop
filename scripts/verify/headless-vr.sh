@@ -442,6 +442,7 @@ cmd_scenario() {
       cmd_screenshot after-input 2>"$dir/shot2.err" | tee "$dir/shot2.txt" || true
       # Separate IPC suite (own temp sock)
       "$ROOT/scripts/verify/ipc-scenarios.sh" >"$dir/ipc.txt" 2>&1 || rc=1
+      "$ROOT/scripts/verify/palm-reach-regression.sh" >"$dir/palm-reach.txt" 2>&1 || rc=1
       ;;
     *) die "scenarios: smoke|all" ;;
   esac
