@@ -1,6 +1,6 @@
 # Cylinder shell design
 
-Status: scaffold sketch (2026-11-04). Product is a **proper Stardust panel shell**, not a Flatland fork.
+Status: Candidate B is the live product path (2026-11-05 cutover). Panel shell + layout daemon; not a Flatland fork. See `docs/cylinder-cutover.md` for ops.
 
 ## Overview
 

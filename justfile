@@ -1,4 +1,4 @@
-# stardust-desktop: host-mirror + desk toys + panel-shell helpers
+# stardust-desktop: cylinder-shell + host-mirror + desk toys
 prefix := env_var_or_default("PREFIX", env_var("HOME") / ".local")
 
 default: build
@@ -31,11 +31,13 @@ verify:
     scripts/verify.sh
 
 
-# Scaffold only: build cylinder-shell binaries into {{prefix}}/bin. Does NOT replace
-# the Flatland-backed stardust_panel_shell until the cylinder worker accepts panels.
+# Cylinder panel shell + layout daemon (live product -p). Also keep `just install` for
+# host-mirror, desk toys, and the legacy Flatland wrapper used by rollback.
 install-cylinder-shell: build
     install -Dm755 -t {{prefix}}/bin target/release/cylinder-shell target/release/cylinder-layout
+    install -Dm755 -t {{prefix}}/bin scripts/stardust-cylinder-nudge scripts/stardust-mirrors-autostart
+    install -Dm755 -t {{prefix}}/bin scripts/cyl-headset-side-start scripts/cyl-headset-side-stop scripts/cyl-headset-side-launch-app scripts/cyl-headset-side-launch-mirror
     install -d {{prefix}}/libexec
     sed 's|@PREFIX@|{{prefix}}|g' scripts/stardust_cylinder_shell.in > {{prefix}}/libexec/stardust_cylinder_shell
     chmod 755 {{prefix}}/libexec/stardust_cylinder_shell
-    @echo "cylinder-shell + cylinder-layout + libexec/stardust_cylinder_shell installed. Live -p stays Flatland until headset confirms (see docs/cyl-headset-test.md)."
+    @echo "cylinder-shell + cylinder-layout + libexec/stardust_cylinder_shell installed. Point -p at that wrapper (see docs/cylinder-cutover.md)."

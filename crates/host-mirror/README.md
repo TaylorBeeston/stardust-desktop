@@ -42,6 +42,9 @@ host-mirror [--label NAME] [--token-file PATH] [--size WxH] [--no-input]
 | `HOST_MIRROR_FOLLOW_WINDOW=1` | Resize buffers to follow the window instead of locking to monitor size. |
 | `HOST_MIRROR_CLOSE_EXITS=1` | Exit on window close (otherwise close requests are ignored). |
 | `HOST_MIRROR_DUMP_DIR` | Debug: dump frames to this directory. |
+| `HOST_MIRROR_BUTTON_HOLD_MS` | Max continuous mouse-button hold before forced release (default `10000`). |
+| `HOST_MIRROR_KEY_HOLD_MS` | Keyboard no-key-up watchdog (default `1500`). |
+| `HOST_MIRROR_STARDUST_KEYS=0` | Disable the Stardust key-sink listener (winit keys only). |
 | `RUST_LOG` | Logging (`env_logger`). |
 
 ## Portal restore tokens
@@ -58,6 +61,14 @@ WAYLAND_DISPLAY=wayland-1 host-mirror --label Meta-0 --no-input &
 ```
 
 Give only one of them input (`--no-input` on the others) so two sets of uinput devices don't fight. Each mirror is its own PipeWire stream, so expect roughly double the GPU/bandwidth cost.
+
+## Input cleanup
+
+On focus loss, cursor leave, shutdown, and a per-button hold watchdog, host-mirror releases
+any held mouse buttons on its uinput device. That avoids stuck `BTN_LEFT` / `BTN_RIGHT` on the
+virtual "Stardust Host Mirror Mouse" nodes after a gaze retarget or client teardown.
+
+Stardust keyboard sinks are enabled by default when the compositor offers them.
 
 ## Requirements
 
