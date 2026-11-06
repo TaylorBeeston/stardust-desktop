@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Launch an app (or host-mirror) onto the live cylinder Wayland display.
+# Used by hexagon .desktop entries and keybinds. Never starts/stops the session.
+set -euo pipefail
+RUN="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+LAYOUT_SOCK="${CYLINDER_LAYOUT_SOCK:-$RUN/stardust-cylinder/layout.sock}"
+
+find_cyl_sock() {
+  local pid cand cmd
+  # Prefer newest cylinder -p wayland-service
+  for pid in $(pgrep -f 'stardust-xr-wayland-service ' | sort -nr); do
+    cmd=$(tr '\0' ' ' </proc/$pid/cmdline 2>/dev/null || true)
+    case "$cmd" in
+      *stardust_cylinder_shell*)
+        cand=$(tr '\0' '\n' </proc/$pid/cmdline 2>/dev/null | tail -n1)
+        if [[ -S "$RUN/$cand" ]]; then echo "$cand"; return 0; fi
+        ;;
+    esac
+  done
+  return 1
+}
+
+if [[ -z "${STARDUST_WAYLAND_DISPLAY:-}" ]]; then
+  if sock=$(find_cyl_sock); then
+    export STARDUST_WAYLAND_DISPLAY="$sock"
+  else
+    echo "stardust-cylinder-launch: no cylinder wayland sock; is stardust-session on cylinder-shell?" >&2
+    exit 1
+  fi
+fi
+export WAYLAND_DISPLAY="$STARDUST_WAYLAND_DISPLAY"
+export CYLINDER_LAYOUT_SOCK="$LAYOUT_SOCK"
+# host-mirror binary may be host-mirror-dmabuf
+if [[ "${1:-}" == "host-mirror" ]]; then
+  shift
+  BIN="${HOST_MIRROR_BIN:-}"
+  if [[ -z "$BIN" ]]; then
+    if command -v host-mirror-dmabuf >/dev/null; then BIN=host-mirror-dmabuf
+    else BIN=host-mirror; fi
+  fi
+  export HOST_MIRROR_REPLACE="${HOST_MIRROR_REPLACE:-1}"
+  exec "$BIN" "$@"
+fi
+exec "$@"

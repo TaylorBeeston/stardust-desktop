@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Toggle a host-mirror label on the cylinder compositor (smallest "panel in/out of host").
+# Per-window host capture is NOT supported (ScreenCast is whole-output) — see docs/host-window-keybind.md.
+set -euo pipefail
+LABEL="${1:?usage: $0 <eDP-1|Meta-0>}"
+RUN="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+# Kill existing mirror with this label
+pkill -f "host-mirror[^ ]* --label ${LABEL}" 2>/dev/null || true
+pkill -f "host-mirror-dmabuf --label ${LABEL}" 2>/dev/null || true
+sleep 0.2
+# If it was running, we just removed it (out). If user passes --on, always launch.
+if [[ "${2:-}" == "--off" ]]; then
+  echo "stopped host-mirror --label $LABEL"
+  exit 0
+fi
+# Launch onto cylinder
+exec "$(dirname "$0")/stardust-cylinder-launch" host-mirror --label "$LABEL"

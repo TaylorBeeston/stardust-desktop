@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Host Mirror Meta-0
+Comment=Mirror the ultrawide virtual display into the Stardust cylinder
+Exec=stardust-cylinder-launch host-mirror --label Meta-0
+Icon=video-display
+Categories=Utility;System;
+Terminal=false
+StartupNotify=false

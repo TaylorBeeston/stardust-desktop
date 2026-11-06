@@ -33,3 +33,10 @@ newtons_cradle 9, spin_sign 7, wrist_menu 9, host-mirror 1 (88 total in the iner
 3. Manifold/simular press/release target latch (upstream).
 4. Touch + child surfaces on cylinder.
 5. Keep bootstrap DeskToys / wrist-menu install in sync with this monorepo when deploying.
+
+## Overnight generalize (2026-11-05 night)
+
+- Verification skill: `.agents/skills/verify-stardust-desktop/` (+ `.cursor/skills` symlink). Run `scripts/verify.sh`.
+- Tiling IPC: `MetricsChanged` from surface resize, `Swap` / `Reorder` / `Shift`, pinch-drag panel shift, optional `CYLINDER_BEAD_REANCHOR=1`.
+- Hexagon: desktop entries + `stardust-cylinder-launch`; protostar fork `TaylorBeeston/protostar` branch `roadie/cylinder-launch`.
+- Host keybind: monitor toggle only (`stardust-cylinder-toggle-mirror`); per-window capture documented as future in `docs/host-window-keybind.md`.

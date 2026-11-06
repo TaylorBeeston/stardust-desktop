@@ -13,7 +13,8 @@ test:
 # Models go to {{prefix}}/share/io.github.TaylorBeeston.DeskToys: add {{prefix}}/share to STARDUST_RES_PREFIXES.
 install: build
     install -Dm755 -t {{prefix}}/bin target/release/host-mirror target/release/wrist-menu target/release/newtons-cradle target/release/spin-sign
-    install -Dm755 -t {{prefix}}/bin scripts/stardust-dual-mirror-flat scripts/stardust-dual-mirror-recenter scripts/stardust-recenter-all
+    install -Dm755 -t {{prefix}}/bin scripts/stardust-dual-mirror-flat scripts/stardust-dual-mirror-recenter scripts/stardust-recenter-all scripts/stardust-cylinder-launch scripts/stardust-cylinder-nudge scripts/stardust-cylinder-toggle-mirror
+    install -Dm644 -t {{prefix}}/share/applications share/applications/*.desktop
     install -d {{prefix}}/share/io.github.TaylorBeeston.DeskToys {{prefix}}/libexec
     install -m644 crates/desk-toys/data/io.github.TaylorBeeston.DeskToys/*.glb {{prefix}}/share/io.github.TaylorBeeston.DeskToys/
     sed 's|@PREFIX@|{{prefix}}|g' scripts/stardust_panel_shell.in > {{prefix}}/libexec/stardust_panel_shell
@@ -34,7 +35,7 @@ verify:
 # Cylinder panel shell + layout daemon (live product -p). Also keep `just install` for
 # host-mirror, desk toys, and the legacy Flatland wrapper used by rollback.
 install-cylinder-shell: build
-    install -Dm755 -t {{prefix}}/bin target/release/cylinder-shell target/release/cylinder-layout
+    install -Dm755 -t {{prefix}}/bin target/release/cylinder-shell target/release/cylinder-layout scripts/stardust-cylinder-nudge scripts/stardust-cylinder-launch
     install -Dm755 -t {{prefix}}/bin scripts/stardust-cylinder-nudge scripts/stardust-mirrors-autostart
     install -Dm755 -t {{prefix}}/bin scripts/cyl-headset-side-start scripts/cyl-headset-side-stop scripts/cyl-headset-side-launch-app scripts/cyl-headset-side-launch-mirror
     install -d {{prefix}}/libexec

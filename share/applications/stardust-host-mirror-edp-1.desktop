@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Host Mirror eDP-1
+Comment=Mirror the laptop display into the Stardust cylinder
+Exec=stardust-cylinder-launch host-mirror --label eDP-1
+Icon=video-display
+Categories=Utility;System;
+Terminal=false
+StartupNotify=false
