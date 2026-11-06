@@ -14,6 +14,9 @@ use crate::mods::ModTracker;
 use crate::outline::{curved_panel_border, FOCUS_OUTLINE_TIMEOUT};
 use crate::hit_test::CylinderSliceHitTest;
 use crate::layout_ipc::{apply_layout_event, LayoutEvent, LayoutRequestSender, LayoutSession};
+use crate::wire::{ensure_wire_owner, WireLayout};
+use crate::wire_bead::WireBead;
+use std::path::PathBuf;
 use crate::mesh::bake_curved_panel_glb;
 use crate::pointer_uv::{cursor_mesh_transform, cursor_surface_uv, mesh_uv_to_surface_px};
 use crate::panel::{PanelWorker, SlotPlacement};
@@ -33,7 +36,6 @@ use stardust_xr_panels_asteroids::{
     panel_shell::{PanelShell, PanelShellHandler},
     surface_model::SurfaceModel,
 };
-use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
@@ -44,6 +46,8 @@ pub struct PendingLaunch {
     pub placement: SlotPlacement,
     pub mesh_path: PathBuf,
     pub radius_m: f32,
+    pub group_yaw_rad: f32,
+    pub group_gap_m: f32,
 }
 
 static PENDING: OnceLock<PendingLaunch> = OnceLock::new();
@@ -101,6 +105,12 @@ pub struct CylinderShell {
     /// Client wl_pointer cursor geometry from PanelShell (Flatland `item.cursor`).
     #[serde(skip)]
     cursor: Option<Geometry>,
+    /// Group yaw (gap centre) — from layout Assigned/GroupChanged.
+    #[serde(skip)]
+    group_yaw_rad: f32,
+    /// Group gap (metres of arc) — for bead placement parity with packing.
+    #[serde(skip)]
+    group_gap_m: f32,
 }
 
 /// Apply a relative mouse delta to the cursor, clamped to the surface. Pure — unit-tested.
@@ -139,6 +149,8 @@ impl Default for CylinderShell {
             mod_tracker: ModTracker::new(),
             last_input_at: None,
             cursor: None,
+            group_yaw_rad: 0.0,
+            group_gap_m: 0.055,
         }
     }
 }
@@ -159,6 +171,8 @@ impl ClientState for CylinderShell {
         self.width_m = pending.placement.hit_test.width_m;
         self.height_m = pending.placement.hit_test.height_m;
         self.radius_m = pending.radius_m;
+        self.group_yaw_rad = pending.group_yaw_rad;
+        self.group_gap_m = pending.group_gap_m;
         self.size_px = pending.metrics.size_px;
         self.mesh_path = Some(pending.mesh_path.to_string_lossy().into_owned());
         self.worker = PanelWorker::new(pending.metrics.clone());
@@ -211,6 +225,7 @@ impl Reify for CylinderShell {
             .build()
             .maybe_child(self.pointer_plane())
             .maybe_child(self.focus_outline())
+            .maybe_child(self.wire_bead())
             .maybe_child(self.cursor_model())
             .maybe_child(self.panel_shell(context))
             .maybe_child(self.surface_model())
@@ -467,6 +482,8 @@ impl CylinderShell {
         self.width_m = placement.hit_test.width_m;
         self.height_m = placement.hit_test.height_m;
         self.radius_m = group.radius_m;
+        self.group_yaw_rad = group.yaw_rad;
+        self.group_gap_m = group.gap_m;
         let geom_changed = (old_r - self.radius_m).abs() > 1e-4
             || (old_w - self.width_m).abs() > 1e-4
             || (old_h - self.height_m).abs() > 1e-4;
@@ -487,6 +504,45 @@ impl CylinderShell {
             pos = ?self.pose.position,
             "applied layout GroupChanged"
         );
+    }
+
+    fn runtime_dir() -> PathBuf {
+        std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/tmp"))
+    }
+
+    /// Claim the process-wide wire flock if free. Safe to call from `&self` (reify).
+    fn ensure_wire_owner(&self) -> bool {
+        ensure_wire_owner(&Self::runtime_dir())
+    }
+
+    fn wire_layout(&self) -> WireLayout {
+        WireLayout {
+            radius_m: self.radius_m,
+            yaw_rad: self.group_yaw_rad,
+            height_m: f32::from(self.pose.position.y),
+            panel_height_m: self.height_m,
+            gap_m: self.group_gap_m,
+        }
+    }
+
+    /// Upper/lower rings + gap bead — only the flock owner draws (exactly one across workers).
+    fn wire_bead(&self) -> Option<impl Element<Self> + use<>> {
+        if !self.ensure_wire_owner() {
+            return None;
+        }
+        Some(
+            WireBead::new(self.wire_layout())
+                .on_grab_delta(|state: &mut Self, dyaw, dh| {
+                    state.send_group_grab(dyaw, dh);
+                })
+                .on_grab_end(|_state: &mut Self| {
+                    // No auto-reanchor: existing Reanchor snaps gap to HMD facing,
+                    // unlike Flatland's axis-under-head. Use stardust-cylinder-nudge reanchor.
+                })
+                .build(),
+        )
     }
 
     /// XR / bead path: request a group yaw/height delta (no-op if layout session gone).

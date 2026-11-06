@@ -15,6 +15,8 @@ pub mod panel;
 pub mod pointer_uv;
 pub mod pointer_button;
 pub mod preflight;
+pub mod wire;
+pub mod wire_bead;
 pub mod xr;
 
 pub use cylinder::{CylinderAnchor, CylinderState, PanelMetrics, PanelSlot, SlotId, MIN_RADIUS_M, MAX_RADIUS_M};

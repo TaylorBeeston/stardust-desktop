@@ -71,6 +71,8 @@ fn main() {
 
     let mut mesh_path = None;
     let mut radius_m = 0.7f32;
+    let mut group_yaw_rad = 0.0f32;
+    let mut group_gap_m = 0.055f32;
     if let Some(c) = client.as_mut() {
         if let Err(e) = c.send(LayoutRequest::Hello { metrics: metrics.clone() }) {
             tracing::warn!(%e, "layout hello failed");
@@ -79,6 +81,8 @@ fn main() {
         {
             let p = worker.apply_slot(slot.clone(), &group);
             radius_m = group.radius_m;
+            group_yaw_rad = group.yaw_rad;
+            group_gap_m = group.gap_m;
             match bake_curved_panel_glb(slot.width_m, slot.height_m, group.radius_m) {
                 Ok(path) => {
                     tracing::info!(id = slot.id.0, az = p.azimuth_rad, pos = ?p.position, ?path, "slot assigned");
@@ -136,6 +140,8 @@ fn main() {
         placement,
         mesh_path,
         radius_m,
+        group_yaw_rad,
+        group_gap_m,
     });
 
     // Keep the layout socket open for the XR lifetime so GroupChanged re-poses the

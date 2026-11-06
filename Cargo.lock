@@ -723,6 +723,7 @@ dependencies = [
  "directories 5.0.1",
  "glam",
  "gluon-ipc",
+ "libc",
  "serde",
  "serde_json",
  "stardust-xr-asteroids",
