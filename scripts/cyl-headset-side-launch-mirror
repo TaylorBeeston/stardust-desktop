@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# Launch ONE host-mirror into the SIDE cylinder compositor (not live Flatland).
+# Uses a distinct label (default cyl-eDP-1) so Flatland eDP-1 / Meta-0 are never
+# matched by pgrep / REPLACE. Reuses the eDP-1 portal restore token by default
+# (no picker dialog). Does NOT touch stardust-session / WiVRn / GNOME / Flatland.
+set -euo pipefail
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/cylinder-headset-side"
+RUN="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+if [[ ! -f "$STATE/wayland-display" || ! -f "$STATE/side.pid" ]]; then
+  echo "side stack not running; run cyl-headset-side-start first" >&2
+  exit 1
+fi
+if ! kill -0 "$(cat "$STATE/side.pid")" 2>/dev/null; then
+  echo "side wayland-service dead; restart with cyl-headset-side-start" >&2
+  exit 1
+fi
+
+LABEL="${1:-cyl-eDP-1}"
+shift || true
+SRC_TOKEN_LABEL="${HOST_MIRROR_TOKEN_SRC:-eDP-1}"
+TOKEN_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/host-mirror"
+TOKEN_FILE="${HOST_MIRROR_TOKEN_FILE:-$TOKEN_DIR/${LABEL}.token}"
+SRC_TOKEN="$TOKEN_DIR/${SRC_TOKEN_LABEL}.token"
+
+if [[ ! -f "$TOKEN_FILE" ]]; then
+  if [[ -f "$SRC_TOKEN" ]]; then
+    mkdir -p "$TOKEN_DIR"
+    cp -a "$SRC_TOKEN" "$TOKEN_FILE"
+    echo "seeded $TOKEN_FILE from $SRC_TOKEN"
+  else
+    echo "no token at $TOKEN_FILE (or $SRC_TOKEN); portal dialog will appear on the flat desktop" >&2
+  fi
+fi
+
+# Refuse to reuse Flatland's live labels
+case "$LABEL" in
+  eDP-1|Meta-0)
+    echo "refusing label '$LABEL' — that is a live Flatland mirror; pick cyl-eDP-1 (or similar)" >&2
+    exit 2
+    ;;
+esac
+
+pat="host-mirror[^ ]* --label ${LABEL}( |$)"
+if pgrep -f "host-mirror[^ ]* --label ${LABEL}" >/dev/null; then
+  echo "side mirror label $LABEL already running (pid $(pgrep -f "host-mirror[^ ]* --label ${LABEL}" | tr '\n' ' ')); stop it first" >&2
+  exit 1
+fi
+
+WL=$(cat "$STATE/wayland-display")
+export WAYLAND_DISPLAY="$WL"
+export CYLINDER_LAYOUT_SOCK="$(cat "$STATE/layout.sock.path")"
+export STARDUST_INSTANCE="$(cat "$STATE/instance")"
+export HOST_MIRROR_DESKTOP="${HOST_MIRROR_DESKTOP:-0,0,6000,1600}"
+export RUST_LOG="${RUST_LOG:-info}"
+
+_def="$(command -v host-mirror-dmabuf || command -v host-mirror || echo host-mirror)"
+BIN="${HOST_MIRROR_BIN:-$_def}"
+LOG="$RUN/host-mirror-${LABEL}.log"
+[ -f "$LOG" ] && mv -f "$LOG" "$LOG.prev"
+echo "== $(date '+%F %T %Z') side-launch $LABEL bin=$BIN WAYLAND_DISPLAY=$WL ==" >"$LOG"
+echo "+ WAYLAND_DISPLAY=$WL $BIN --label $LABEL --token-file $TOKEN_FILE"
+
+setsid "$BIN" --label "$LABEL" --token-file "$TOKEN_FILE" "$@" >>"$LOG" 2>&1 &
+echo $! > "$STATE/side-mirror.pid"
+echo "side mirror pid=$(cat "$STATE/side-mirror.pid")  log=$LOG"
+
+# Wait briefly for stream selection / present
+ok=0
+for _ in $(seq 1 45); do
+  if grep -qE 'selected stream|presenting via' "$LOG" 2>/dev/null; then
+    grep -E 'selected stream|presenting via' "$LOG" | tail -5
+    ok=1
+    break
+  fi
+  if ! kill -0 "$(cat "$STATE/side-mirror.pid")" 2>/dev/null; then
+    echo "side mirror exited:"; tail -20 "$LOG" >&2
+    exit 1
+  fi
+  sleep 1
+done
+[[ $ok -eq 1 ]] || { echo "still waiting on portal/stream; see $LOG"; exit 0; }

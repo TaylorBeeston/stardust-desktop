@@ -47,8 +47,16 @@ stop_pidfile_tree() {
   fi
 }
 
-# App first (ghostty), then compositor tree (per-window wayland-service + cylinder-shell),
+# Side host-mirror first (distinct label; never Flatland eDP-1/Meta-0), then app
+# (ghostty), then compositor tree (per-window wayland-service + cylinder-shell),
 # then layout daemon. Order avoids racing a still-accepting acceptor.
+stop_pidfile_tree "$STATE/side-mirror.pid" "side host-mirror"
+# Also reap by distinct cyl label in case pidfile was lost (never matches eDP-1/Meta-0).
+if pgrep -f 'host-mirror[^ ]* --label cyl-' >/dev/null 2>&1; then
+  for p in $(pgrep -f 'host-mirror[^ ]* --label cyl-' || true); do
+    kill_tree "$p" "side host-mirror-by-label"
+  done
+fi
 stop_pidfile_tree "$STATE/last-app.pid" "side app"
 stop_pidfile_tree "$STATE/side.pid" "side wayland-service"
 stop_pidfile_tree "$STATE/layout.pid" "cylinder-layout"
