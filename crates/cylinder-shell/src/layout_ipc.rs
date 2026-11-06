@@ -31,6 +31,12 @@ pub enum LayoutRequest {
     GroupGrab { delta_yaw: f32, delta_height: f32 },
     SetRadius { radius_m: f32 },
     Reanchor { hmd_yaw: f32, hmd_height: f32 },
+    /// Swap two panels in registration order.
+    Swap { a: SlotId, b: SlotId },
+    /// Move panel to index in registration order.
+    Reorder { id: SlotId, index: usize },
+    /// Move panel by delta in registration order (−1/+1 for neighbour swap-ish).
+    Shift { id: SlotId, delta: i32 },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -232,6 +238,21 @@ fn handle_worker(stream: UnixStream, shared: Arc<Mutex<Shared>>) -> io::Result<(
                     sh.state.reanchor(hmd_yaw, hmd_height);
                     sh.broadcast(None);
                 }
+                LayoutRequest::Swap { a, b } => {
+                    if sh.state.swap_slots(a, b) {
+                        sh.broadcast(None);
+                    }
+                }
+                LayoutRequest::Reorder { id, index } => {
+                    if sh.state.reorder_slot(id, index) {
+                        sh.broadcast(None);
+                    }
+                }
+                LayoutRequest::Shift { id, delta } => {
+                    if sh.state.shift_slot(id, delta) {
+                        sh.broadcast(None);
+                    }
+                }
             }
         }
         Ok(())
@@ -323,6 +344,15 @@ impl LayoutRequestSender {
 
     pub fn reanchor(&self, hmd_yaw: f32, hmd_height: f32) -> Result<(), LayoutSessionClosed> {
         self.send(LayoutRequest::Reanchor { hmd_yaw, hmd_height })
+    }
+    pub fn swap(&self, a: SlotId, b: SlotId) -> Result<(), LayoutSessionClosed> {
+        self.send(LayoutRequest::Swap { a, b })
+    }
+    pub fn reorder(&self, id: SlotId, index: usize) -> Result<(), LayoutSessionClosed> {
+        self.send(LayoutRequest::Reorder { id, index })
+    }
+    pub fn shift(&self, id: SlotId, delta: i32) -> Result<(), LayoutSessionClosed> {
+        self.send(LayoutRequest::Shift { id, delta })
     }
 }
 

@@ -137,6 +137,63 @@ impl CylinderState {
         self.height_m = hmd_height;
     }
 
+    /// Swap two panels' positions in registration order, then re-pack.
+    pub fn swap_slots(&mut self, a: SlotId, b: SlotId) -> bool {
+        let ia = self.slots.iter().position(|s| s.id == a);
+        let ib = self.slots.iter().position(|s| s.id == b);
+        match (ia, ib) {
+            (Some(i), Some(j)) if i != j => {
+                self.slots.swap(i, j);
+                self.relayout();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Move `id` to `index` in registration order (clamped), then re-pack.
+    pub fn reorder_slot(&mut self, id: SlotId, index: usize) -> bool {
+        let Some(from) = self.slots.iter().position(|s| s.id == id) else {
+            return false;
+        };
+        let slot = self.slots.remove(from);
+        let to = index.min(self.slots.len());
+        self.slots.insert(to, slot);
+        self.relayout();
+        true
+    }
+
+    /// Index of a slot in registration order.
+    pub fn slot_index(&self, id: SlotId) -> Option<usize> {
+        self.slots.iter().position(|s| s.id == id)
+    }
+
+    /// Move `id` by `delta` slots in registration order (clamped).
+    pub fn shift_slot(&mut self, id: SlotId, delta: i32) -> bool {
+        let Some(from) = self.slot_index(id) else {
+            return false;
+        };
+        if delta == 0 {
+            return false;
+        }
+        let dest = (from as i32 + delta).clamp(0, self.slots.len().saturating_sub(1) as i32) as usize;
+        if dest == from {
+            return false;
+        }
+        self.reorder_slot(id, dest)
+    }
+
+    /// Adjacent panel in registration order.
+    pub fn neighbour(&self, id: SlotId, toward_higher_index: bool) -> Option<SlotId> {
+        let i = self.slot_index(id)?;
+        let j = if toward_higher_index {
+            i.checked_add(1)?
+        } else {
+            i.checked_sub(1)?
+        };
+        self.slots.get(j).map(|s| s.id)
+    }
+
     pub fn set_radius(&mut self, radius_m: f32) {
         if radius_m.is_finite() {
             self.radius_m = radius_m.clamp(MIN_RADIUS_M, MAX_RADIUS_M);
@@ -337,5 +394,29 @@ mod tests {
         assert!((b.width_m - 2560.0 / 2300.0).abs() < 1e-3, "edp restored {}", b.width_m);
         assert!((a.yaw_rad - 1.226).abs() < 0.02, "meta yaw {}", a.yaw_rad); // ~70.3 deg
         assert!((b.yaw_rad + 0.834).abs() < 0.02, "edp yaw {}", b.yaw_rad); // ~-47.8 deg
+    }
+
+    #[test]
+    fn swap_and_reorder_change_sides() {
+        let mut c = CylinderState::default();
+        let a = c.assign_slot(&m(1000, 500));
+        let b = c.assign_slot(&m(1000, 500));
+        assert!(c.slot(a.id).unwrap().yaw_rad > 0.0);
+        assert!(c.slot(b.id).unwrap().yaw_rad < 0.0);
+        assert!(c.swap_slots(a.id, b.id));
+        assert!(c.slot(a.id).unwrap().yaw_rad < 0.0);
+        assert!(c.slot(b.id).unwrap().yaw_rad > 0.0);
+        assert!(c.reorder_slot(a.id, 0));
+        assert!(c.slot(a.id).unwrap().yaw_rad > 0.0);
+    }
+
+    #[test]
+    fn neighbour_follows_registration_order() {
+        let mut c = CylinderState::default();
+        let a = c.assign_slot(&m(1000, 500));
+        let b = c.assign_slot(&m(1000, 500));
+        assert_eq!(c.neighbour(a.id, true), Some(b.id));
+        assert_eq!(c.neighbour(b.id, false), Some(a.id));
+        assert_eq!(c.neighbour(a.id, false), None);
     }
 }

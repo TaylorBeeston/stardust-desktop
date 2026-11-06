@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Debug: send GroupGrab / SetRadius / Reanchor to the side layout daemon.
-# Visual bead is NOT implemented yet (STATUS gap 3); this is how to verify
-# group motion over IPC while panels are live.
+# Send GroupGrab / SetRadius / Reanchor / Swap / Reorder / Shift to cylinder-layout.
+# Visual bead is implemented in cylinder-shell; this is the CLI for the same IPC.
 set -euo pipefail
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}/cylinder-headset-side"
 SOCK="${CYLINDER_LAYOUT_SOCK:-}"
@@ -23,13 +22,14 @@ s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 s.connect(sock_path)
 def send(obj):
     s.sendall((json.dumps(obj) + "\n").encode())
-# Register a transient fake panel so we stay connected long enough; GroupGrab
-# itself does not require Hello, but Bye-on-close keeps the daemon tidy.
 send({"Hello": {"metrics": {"size_px": [64, 64], "density_px_per_m": 3000.0, "app_id": "cyl-nudge", "title": "nudge"}}})
-# Drain Assigned
 s.settimeout(1.0)
+assigned = None
 try:
-    _ = s.recv(65536)
+    buf = b""
+    while b"\n" not in buf:
+        buf += s.recv(65536)
+    assigned = json.loads(buf.split(b"\n", 1)[0])
 except Exception:
     pass
 if cmd == "grab":
@@ -39,8 +39,18 @@ elif cmd == "radius":
     send({"SetRadius": {"radius_m": float(a or "0.70")}})
 elif cmd == "reanchor":
     send({"Reanchor": {"hmd_yaw": float(a or "0.0"), "hmd_height": float(b or "0.0")}})
+elif cmd == "swap":
+    send({"Swap": {"a": {"0": int(a)}, "b": {"0": int(b)}}}) if False else send({"Swap": {"a": int(a), "b": int(b)}})
+elif cmd == "reorder":
+    send({"Reorder": {"id": int(a), "index": int(b or "0")}})
+elif cmd == "shift":
+    # shift the nudge's own Assigned id, or explicit id
+    nid = int(a) if a else (assigned or {}).get("Assigned", {}).get("slot", {}).get("id")
+    if nid is None:
+        print("shift needs slot id", file=sys.stderr); sys.exit(2)
+    send({"Shift": {"id": int(nid), "delta": int(b or "1")}})
 else:
-    print(f"unknown cmd {cmd}; use grab|radius|reanchor", file=sys.stderr)
+    print(f"unknown cmd {cmd}; use grab|radius|reanchor|swap|reorder|shift", file=sys.stderr)
     sys.exit(2)
 print(f"sent {cmd} -> {sock_path}")
 s.close()

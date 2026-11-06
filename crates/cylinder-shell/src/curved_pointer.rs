@@ -49,6 +49,8 @@ pub struct CurvedPointerPlane<State: ValidState> {
     on_motion: FnWrapper<dyn Fn(&mut State, (f32, f32)) + Send + Sync>,
     on_button: FnWrapper<dyn Fn(&mut State, u32, bool) + Send + Sync>,
     on_scroll: FnWrapper<dyn Fn(&mut State, [f32; 2]) + Send + Sync>,
+    /// Pinch-drag horizontally past a threshold → signed delta in metres of arc (+ = +u).
+    on_pinch_drag: FnWrapper<dyn Fn(&mut State, f32) + Send + Sync>,
 }
 
 impl<State: ValidState> CurvedPointerPlane<State> {
@@ -58,6 +60,7 @@ impl<State: ValidState> CurvedPointerPlane<State> {
             on_motion: FnWrapper(Box::new(|_, _| {})),
             on_button: FnWrapper(Box::new(|_, _, _| {})),
             on_scroll: FnWrapper(Box::new(|_, _| {})),
+            on_pinch_drag: FnWrapper(Box::new(|_, _| {})),
         }
     }
     /// Called with normalized UV (u right, v down) on the curved slice.
@@ -71,6 +74,10 @@ impl<State: ValidState> CurvedPointerPlane<State> {
     }
     pub fn on_scroll(mut self, f: impl Fn(&mut State, [f32; 2]) + Send + Sync + 'static) -> Self {
         self.on_scroll = FnWrapper(Box::new(f));
+        self
+    }
+    pub fn on_pinch_drag(mut self, f: impl Fn(&mut State, f32) + Send + Sync + 'static) -> Self {
+        self.on_pinch_drag = FnWrapper(Box::new(f));
         self
     }
 }
@@ -89,6 +96,10 @@ pub struct CurvedPointerInner {
     right: SingleAction,
     /// Flatland-style hover ray/line + hit cursor (updated every input frame).
     lines: Lines,
+    /// UV.u at pinch-drag start; None when not dragging for swap.
+    pinch_drag_u0: Option<f32>,
+    /// True once a swap drag fired this pinch (suppress further until release).
+    pinch_drag_fired: bool,
 }
 
 impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
@@ -114,6 +125,8 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
             middle: SingleAction::default(),
             right: SingleAction::default(),
             lines,
+            pinch_drag_u0: None,
+            pinch_drag_fired: false,
         })
     }
 
@@ -187,6 +200,30 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
                 (self.on_button.0)(state, btn, false);
             }
         }
+        // Pinch-drag → panel shift: move > ~12 cm of arc while left-pinching.
+        const DRAG_M: f32 = 0.12;
+        if inner.left.actor_started() {
+            if let Some((_, hit)) = best {
+                inner.pinch_drag_u0 = Some(hit.uv.0);
+                inner.pinch_drag_fired = false;
+            }
+        }
+        if inner.left.actor_stopped() {
+            inner.pinch_drag_u0 = None;
+            inner.pinch_drag_fired = false;
+        }
+        if inner.left.actor_acting() && !inner.pinch_drag_fired {
+            if let (Some(u0), Some((_, hit))) = (inner.pinch_drag_u0, best) {
+                let du = hit.uv.0 - u0;
+                let arc = du * h.width_m;
+                if arc.abs() >= DRAG_M {
+                    (self.on_pinch_drag.0)(state, arc);
+                    inner.pinch_drag_fired = true;
+                    inner.pinch_drag_u0 = Some(hit.uv.0);
+                }
+            }
+        }
+
         let interacting = inner.left.actor_acting() || inner.middle.actor_acting() || inner.right.actor_acting();
         let mut viz: Vec<Line> = Vec::new();
         if let Some((snap, hit)) = best {

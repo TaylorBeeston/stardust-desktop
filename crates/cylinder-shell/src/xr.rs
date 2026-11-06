@@ -374,6 +374,12 @@ impl CylinderShell {
                 .on_button(|state: &mut Self, button, pressed| {
                     state.forward_pointer_button("xr", button, pressed, None);
                 })
+                .on_pinch_drag(|state: &mut Self, arc_m| {
+                    // +u is right on the mesh; shift toward higher index when dragging right.
+                    let delta = if arc_m > 0.0 { 1 } else { -1 };
+                    tracing::info!(arc_m, delta, "pinch-drag panel shift");
+                    state.send_shift(delta);
+                })
                 .on_scroll(|state: &mut Self, delta| {
                     let Some(shell) = &state.shell else { return };
                     let _ = shell.item().pointer_scroll_discrete(SurfaceId::Toplevel, delta.into(), ScrollSource::Wheel, None);
@@ -395,7 +401,9 @@ impl CylinderShell {
             })
             .on_toplevel_resolution_changed(|state, _, size| {
                 state.size_px = (size.x, size.y);
-                tracing::info!(x = size.x, y = size.y, "toplevel resolution");
+                state.worker.metrics.size_px = (size.x, size.y);
+                tracing::info!(x = size.x, y = size.y, "toplevel resolution → MetricsChanged");
+                state.send_metrics_changed();
             })
             .on_toplevel_app_id_changed(|state, _, app_id| {
                 state.worker.metrics.app_id = Some(app_id);
@@ -537,9 +545,18 @@ impl CylinderShell {
                 .on_grab_delta(|state: &mut Self, dyaw, dh| {
                     state.send_group_grab(dyaw, dh);
                 })
-                .on_grab_end(|_state: &mut Self| {
-                    // No auto-reanchor: existing Reanchor snaps gap to HMD facing,
-                    // unlike Flatland's axis-under-head. Use stardust-cylinder-nudge reanchor.
+                .on_grab_end(|state: &mut Self| {
+                    // Opt-in: CYLINDER_BEAD_REANCHOR=1 settles height + keeps gap yaw.
+                    // Full "face HMD" needs live HMD pose (headset follow-up).
+                    match std::env::var("CYLINDER_BEAD_REANCHOR") {
+                        Ok(v) if v == "1" || v.eq_ignore_ascii_case("true") => {
+                            state.send_reanchor(
+                                state.group_yaw_rad,
+                                f32::from(state.pose.position.y),
+                            );
+                        }
+                        _ => {}
+                    }
                 })
                 .build(),
         )
@@ -551,6 +568,26 @@ impl CylinderShell {
             if let Err(e) = tx.group_grab(delta_yaw, delta_height) {
                 tracing::warn!(%e, "GroupGrab send failed");
             }
+        }
+    }
+
+    pub fn send_metrics_changed(&self) {
+        let Some(tx) = &self.layout_tx else { return };
+        let Some(slot) = &self.worker.slot else { return };
+        if let Err(e) = tx.send(crate::layout_ipc::LayoutRequest::MetricsChanged {
+            id: slot.id,
+            metrics: self.worker.metrics.clone(),
+        }) {
+            tracing::warn!(%e, "MetricsChanged send failed");
+        }
+    }
+
+    /// Shift this panel by ±1 in registration order (neighbour swap for two panels).
+    pub fn send_shift(&self, delta: i32) {
+        let Some(tx) = &self.layout_tx else { return };
+        let Some(slot) = &self.worker.slot else { return };
+        if let Err(e) = tx.shift(slot.id, delta) {
+            tracing::warn!(%e, "Shift send failed");
         }
     }
 
