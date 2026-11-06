@@ -37,3 +37,14 @@ Still disabled in startup.sh (Taylor request). Do not relaunch without OK.
 - Packing alternates RIGHT, LEFT by registration order. Autostart launches
   `STARDUST_MIRROR_OUTPUTS=Meta-0 eDP-1` so Meta is RIGHT and eDP is LEFT.
 - Radius default **0.70** (Flatland).
+
+## Layout daemon liveness (post-overlap incident)
+
+Root cause of same-yaw overlap after a session restart: startup saw a **stale**
+`layout.sock` from the previous session (`-S` true) and skipped starting
+`cylinder-layout`. Workers then Hello-failed and both panels sat at the default
+pose. Startup now checks the pidfile / clears a dead sock, and starts layout with
+`CYLINDER_RADIUS_M=0.70` so radius is set **before** any panel registers.
+Mirrors-autostart refuses to launch if the layout sock is not connectable.
+Host-mirror Flatland metrics are always applied from `SDXR_WL_APP_ID` (inherited
+`CYLINDER_DENSITY=3000` no longer wins).

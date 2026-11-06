@@ -17,7 +17,7 @@ pub mod pointer_button;
 pub mod preflight;
 pub mod xr;
 
-pub use cylinder::{CylinderAnchor, CylinderState, PanelMetrics, PanelSlot, SlotId};
+pub use cylinder::{CylinderAnchor, CylinderState, PanelMetrics, PanelSlot, SlotId, MIN_RADIUS_M, MAX_RADIUS_M};
 pub use field_shape::{field_shape_for_slice, slice_aabb_extents};
 pub use hit_test::{CurvedHitTest, CylinderSliceHitTest};
 pub use layout_ipc::{
