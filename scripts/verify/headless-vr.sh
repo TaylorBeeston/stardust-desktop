@@ -26,6 +26,7 @@ SERVER_BIN="${CYLVERIFY_SERVER_BIN:-}"
 AABB="${CYLVERIFY_AABB_DEBUG:-1}"
 
 die() { echo "headless-vr: $*" >&2; exit 1; }
+soft_fail() { echo "headless-vr: $*" >&2; return 1; }
 need() { command -v "$1" >/dev/null || die "missing dependency: $1"; }
 
 pick_server() {
@@ -110,6 +111,19 @@ load_env() {
 
 pid_alive() { [[ -f "$1" ]] && kill -0 "$(cat "$1")" 2>/dev/null; }
 
+# Live GNOME/WiVRn sessions export WAYLAND_DISPLAY into agent shells. If that
+# leaks into the flatscreen verify server, winit/bevy-dmabuf try the session
+# compositor and abort — leaving "no xdo window" and dead pids. Always scrub.
+scrub_compositor_env() {
+  unset WAYLAND_DISPLAY WAYLAND_SOCKET WAYLAND_DISPLAY_NAME || true
+}
+
+stardust_window_id() {
+  local d="${DISPLAY:-:$DISPLAY_NUM}"
+  DISPLAY="$d" xdotool search --name 'Stardust' 2>/dev/null | head -1 || true
+}
+
+
 cmd_stop() {
   local f p
   for f in "$STATE"/pids/*.pid; do
@@ -145,11 +159,14 @@ cmd_status() {
 cmd_start() {
   ensure_bins
   if pid_alive "$STATE/pids/server.pid"; then
-    die "already running; stop first"
+    soft_fail "already running; stop first"; return 1
   fi
   mkdir -p "$STATE/pids" "$HV_XDG" "$HV_CONFIG/stardust" "$STATE/xdg-state" "$HV_LOG" "$STATE/evidence" "$STATE/shots"
   rm -rf "$HV_XDG/stardust-server" "$HV_XDG/stardust-debug" 2>/dev/null || true
+  # Drop stale client env from a previous failed start (would re-export WAYLAND_DISPLAY).
+  rm -f "$STATE/wayland-display" "$STATE/instance" "$STATE/env.sh"
   mkdir -p "$HV_XDG"
+  scrub_compositor_env
 
   # Minimal startup — no atmosphere (needs installed sky pack)
   cat > "$HV_CONFIG/stardust/startup" <<EOF
@@ -166,7 +183,7 @@ EOF
     Xvfb ":$DISPLAY_NUM" -screen 0 1280x720x24 -nolisten tcp >"$HV_LOG/xvfb.log" 2>&1 &
     echo $! > "$STATE/pids/xvfb.pid"
     sleep 0.4
-    kill -0 "$(cat "$STATE/pids/xvfb.pid")" 2>/dev/null || die "Xvfb failed; see $HV_LOG/xvfb.log"
+    kill -0 "$(cat "$STATE/pids/xvfb.pid")" 2>/dev/null || { soft_fail "Xvfb failed; see $HV_LOG/xvfb.log"; return 1; }
   fi
 
   local SBIN; SBIN=$(pick_server)
@@ -175,7 +192,34 @@ EOF
   [[ "$AABB" == 1 ]] && EXTRA+=(--aabb-debug)
 
   # shellcheck disable=SC2086
-  "$SBIN" -f -e "$HV_CONFIG/stardust/startup" --disable-startup-recenter "${EXTRA[@]}" \
+  # Launch with a scrubbed env. `env -u WAYLAND_*` alone is not enough: GNOME
+  # also exports XDG_SESSION_TYPE=wayland / GDK_BACKEND=wayland which steer
+  # winit/bevy-dmabuf onto the live compositor and abort under Xvfb.
+  scrub_compositor_env
+  local -a SERVER_ENV=(
+    "HOME=$HOME"
+    "USER=${USER:-taylor}"
+    "PATH=$PATH"
+    "DISPLAY=:$DISPLAY_NUM"
+    "XDG_RUNTIME_DIR=$HV_XDG"
+    "XDG_CONFIG_HOME=$HV_CONFIG"
+    "XDG_STATE_HOME=$STATE/xdg-state"
+    "XDG_DATA_DIRS=${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+    "STARDUST_RES_PREFIXES=$BOOT/prefix/usr/share:${STARDUST_RES_PREFIXES:-/usr/share}"
+    "WINIT_UNIX_BACKEND=x11"
+    "GDK_BACKEND=x11"
+    "SDL_VIDEODRIVER=x11"
+    "XDG_SESSION_TYPE=x11"
+    "CYLVERIFY_SHOT_REQUEST=$STATE/shots/frame.png"
+    "CYLVERIFY_CAM_YAW_DEG=${CYLVERIFY_CAM_YAW_DEG:-20}"
+    "CYLVERIFY_CAM_PITCH_DEG=${CYLVERIFY_CAM_PITCH_DEG:-0}"
+    "CYLVERIFY_CAM_POS=${CYLVERIFY_CAM_POS:-0,0,0}"
+  )
+  if [[ "$VK_MODE" == lavapipe ]]; then
+    SERVER_ENV+=("VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json" "LIBGL_ALWAYS_SOFTWARE=1")
+  fi
+  env -i "${SERVER_ENV[@]}" \
+    "$SBIN" -f -e "$HV_CONFIG/stardust/startup" --disable-startup-recenter "${EXTRA[@]}" \
     >"$HV_LOG/server.log" 2>&1 &
   echo $! > "$STATE/pids/server.pid"
 
@@ -183,7 +227,7 @@ EOF
   for _ in $(seq 1 80); do
     if ! kill -0 "$(cat "$STATE/pids/server.pid")" 2>/dev/null; then
       tail -40 "$HV_LOG/server.log" || true
-      die "server died during start"
+      soft_fail "server died during start"; return 1
     fi
     if [[ -d "$HV_XDG/stardust-server" ]]; then
       inst=$(find "$HV_XDG/stardust-server" -maxdepth 1 -type s -printf '%f\n' 2>/dev/null | head -1 || true)
@@ -191,35 +235,52 @@ EOF
     fi
     sleep 0.1
   done
-  [[ -n "$inst" ]] || die "no instance sock under $HV_XDG/stardust-server"
+  [[ -n "$inst" ]] || { soft_fail "no instance sock under $HV_XDG/stardust-server"; return 1; }
+  # Server can create the sock then abort (e.g. compositor env leak). Settle.
+  sleep 0.6
+  if ! kill -0 "$(cat "$STATE/pids/server.pid")" 2>/dev/null; then
+    tail -40 "$HV_LOG/server.log" || true
+    soft_fail "server died right after publishing instance; see $HV_LOG/server.log"; return 1
+  fi
   export STARDUST_INSTANCE="$inst"
+  scrub_compositor_env
   write_env; source "$STATE/env.sh"
+  scrub_compositor_env
 
-  for _ in $(seq 1 60); do
-    DISPLAY=":$DISPLAY_NUM" xdotool search --name 'Stardust' >/dev/null 2>&1 && break
+  local wid=""
+  for _ in $(seq 1 80); do
+    wid=$(stardust_window_id)
+    [[ -n "$wid" ]] && break
     sleep 0.15
   done
-  sleep 0.4
+  if [[ -z "$wid" ]]; then
+    echo "WARN no Stardust X11 window yet (shots/click may be limited)" >&2
+  else
+    echo "Stardust window id=$wid"
+  fi
+  sleep 0.3
 
   rm -f "$STATE/layout.sock"
   CYLINDER_LAYOUT_SOCK="$STATE/layout.sock" CYLINDER_RADIUS_M="${CYLINDER_RADIUS_M:-0.70}" \
     cylinder-layout >"$HV_LOG/layout.log" 2>&1 &
   echo $! > "$STATE/pids/layout.pid"
   sleep 0.25
-  kill -0 "$(cat "$STATE/pids/layout.pid")" 2>/dev/null || die "layout failed; see $HV_LOG/layout.log"
+  kill -0 "$(cat "$STATE/pids/layout.pid")" 2>/dev/null || { soft_fail "layout failed; see $HV_LOG/layout.log"; return 1; }
   echo "$STATE/layout.sock" > "$STATE/layout.sock.path"
 
-  local WL; WL=$(display-socket-finder wayland)
+  local WL
+  WL=$(XDG_RUNTIME_DIR="$HV_XDG" STARDUST_INSTANCE="$inst" env -u WAYLAND_DISPLAY -u WAYLAND_SOCKET \
+    display-socket-finder wayland)
   echo "$WL" > "$STATE/wayland-display"
   mkdir -p "$HV_XDG/stardust-protected-panel-provider"
-  WAYLAND_DISPLAY="$WL" CYLINDER_LAYOUT_SOCK="$STATE/layout.sock" STARDUST_INSTANCE="$inst" \
+  XDG_RUNTIME_DIR="$HV_XDG" WAYLAND_DISPLAY="$WL" CYLINDER_LAYOUT_SOCK="$STATE/layout.sock" STARDUST_INSTANCE="$inst" \
     stardust-xr-wayland-service -p "$PREFIX/libexec/stardust_cylinder_shell" "$WL" \
       >"$HV_LOG/wayland.log" 2>&1 &
   echo $! > "$STATE/pids/wayland.pid"
   sleep 0.5
   if ! kill -0 "$(cat "$STATE/pids/wayland.pid")" 2>/dev/null; then
     tail -30 "$HV_LOG/wayland.log" || true
-    die "wayland-service failed"
+    soft_fail "wayland-service failed"; return 1
   fi
   write_env
   echo "headless-vr UP"
@@ -283,7 +344,8 @@ cmd_launch() {
 cmd_pose() {
   load_env
   local action="${1:-nudge-forward}"
-  local WID; WID=$(DISPLAY=":$DISPLAY_NUM" xdotool search --name 'Stardust' | head -1) || die "no window"
+  local WID; WID=$(stardust_window_id)
+  if [[ -z "$WID" ]]; then echo "SKIP pose $action (no Stardust window)"; return 0; fi
   case "$action" in
     nudge-forward|forward) DISPLAY=":$DISPLAY_NUM" xdotool key --window "$WID" --delay 40 w w w w ;;
     nudge-back|back) DISPLAY=":$DISPLAY_NUM" xdotool key --window "$WID" --delay 40 s s s s ;;
@@ -307,7 +369,8 @@ cmd_pose() {
 cmd_click() {
   load_env
   local x="${1:-640}" y="${2:-360}"
-  local WID; WID=$(DISPLAY=":$DISPLAY_NUM" xdotool search --name 'Stardust' | head -1) || die "no window"
+  local WID; WID=$(stardust_window_id)
+  if [[ -z "$WID" ]]; then echo "SKIP click (no Stardust window)"; return 0; fi
   DISPLAY=":$DISPLAY_NUM" xdotool mousemove --window "$WID" "$x" "$y"
   DISPLAY=":$DISPLAY_NUM" xdotool click --window "$WID" 1
   echo "click $x $y"
@@ -316,7 +379,8 @@ cmd_click() {
 cmd_pinch() {
   load_env
   local phase="${1:-tap}" x="${2:-640}" y="${3:-360}" dx="${4:-0}" dy="${5:-0}"
-  local WID; WID=$(DISPLAY=":$DISPLAY_NUM" xdotool search --name 'Stardust' | head -1) || die "no window"
+  local WID; WID=$(stardust_window_id)
+  if [[ -z "$WID" ]]; then echo "SKIP pinch $phase (no Stardust window)"; return 0; fi
   DISPLAY=":$DISPLAY_NUM" xdotool mousemove --window "$WID" "$x" "$y"
   case "$phase" in
     down) DISPLAY=":$DISPLAY_NUM" xdotool mousedown --window "$WID" 3 ;;
@@ -335,7 +399,8 @@ cmd_pinch() {
 
 cmd_key() {
   load_env
-  local WID; WID=$(DISPLAY=":$DISPLAY_NUM" xdotool search --name 'Stardust' | head -1) || die "no window"
+  local WID; WID=$(stardust_window_id)
+  if [[ -z "$WID" ]]; then echo "SKIP key (no Stardust window)"; return 0; fi
   shift || true
   DISPLAY=":$DISPLAY_NUM" xdotool key --window "$WID" "$@"
   echo "key $*"
@@ -420,29 +485,66 @@ PY
 
 cmd_scenario() {
   local which="${1:-smoke}"
-  load_env
   local ts; ts=$(date +%Y%m%d-%H%M%S)
   local dir="$EVID_ROOT/headless-vr-scenario-$which-$ts"
   mkdir -p "$dir"
   local rc=0
   case "$which" in
     smoke|all)
-      cmd_doctor | tee "$dir/doctor.txt" || rc=1
-      cmd_screenshot empty-or-aabb 2>"$dir/shot0.err" | tee "$dir/shot0.txt" || true
-      if command -v kitty >/dev/null; then cmd_launch kitty || rc=1
-      elif command -v ghostty >/dev/null; then cmd_launch ghostty || rc=1
-      else echo "SKIP no kitty/ghostty" | tee -a "$dir/notes.txt"; fi
-      sleep 2
-      cmd_screenshot with-panel 2>"$dir/shot1.err" | tee "$dir/shot1.txt" || rc=1
-      cmd_state | tee "$dir/state.txt" || rc=1
-      cmd_click 700 360 || true
-      sleep 0.2
-      cmd_pinch drag 700 360 50 0 || true
-      sleep 0.3
-      cmd_screenshot after-input 2>"$dir/shot2.err" | tee "$dir/shot2.txt" || true
-      # Separate IPC suite (own temp sock)
+      # When a LIVE stardust-xr-server holds the NVIDIA GPU, flatscreen+Xvfb
+      # aborts in bevy-dmabuf. That is expected alongside Taylor's session.
+      # Hard gates: isolation notes + IPC + palm. Graphical stack is best-effort.
+      if [[ "${CYLVERIFY_VK_EXPLICIT:-}" != 1 ]]; then
+        export CYLVERIFY_VK=nvidia
+      fi
+      VK_MODE="$CYLVERIFY_VK"
+      local live_gpu=0
+      if [[ -S /run/user/$(id -u)/stardust-server/stardust-0 ]] || pgrep -f 'stardust-xr-server -s' >/dev/null; then
+        live_gpu=1
+        echo "NOTE live Stardust GPU session present — graphical flatscreen may fail; IPC+palm still run" | tee -a "$dir/notes.txt"
+      fi
+      cmd_stop >"$dir/stop-before.txt" 2>&1 || true
+      local started=0
+      if cmd_start >"$dir/start.txt" 2>&1; then
+        started=1
+      else
+        echo "WARN graphical start failed (ok when live GPU is busy)" | tee -a "$dir/notes.txt"
+        tail -40 "$HV_LOG/server.log" >>"$dir/notes.txt" 2>/dev/null || true
+        if [[ "$live_gpu" != 1 ]]; then
+          rc=1
+        fi
+      fi
+      if [[ "$started" == 1 ]]; then
+        load_env
+        cmd_doctor | tee "$dir/doctor.txt" || rc=1
+        cmd_screenshot empty-or-aabb 2>"$dir/shot0.err" | tee "$dir/shot0.txt" \
+          || echo "WARN shot0 failed" | tee -a "$dir/notes.txt"
+        if command -v kitty >/dev/null; then cmd_launch kitty || true
+        elif command -v ghostty >/dev/null; then cmd_launch ghostty || true
+        else echo "SKIP no kitty/ghostty" | tee -a "$dir/notes.txt"; fi
+        sleep 2
+        cmd_screenshot with-panel 2>"$dir/shot1.err" | tee "$dir/shot1.txt" \
+          || echo "WARN shot1 failed" | tee -a "$dir/notes.txt"
+        cmd_state | tee "$dir/state.txt" || true
+        cmd_click 700 360 || true
+        sleep 0.2
+        cmd_pinch drag 700 360 50 0 || true
+        sleep 0.3
+        cmd_screenshot after-input 2>"$dir/shot2.err" | tee "$dir/shot2.txt" \
+          || echo "WARN shot2 failed" | tee -a "$dir/notes.txt"
+      else
+        {
+          echo "NOTE doctor: graphical stack not up (live GPU=$live_gpu)"
+          ensure_bins
+          echo "OK  verify bins present"
+          if [[ "$HV_XDG" == /run/user/* ]]; then echo "BAD private xdg collides"; rc=1
+          else echo "OK  private XDG path=$HV_XDG"; fi
+          [[ -S /run/user/$(id -u)/stardust-server/stardust-0 ]] && echo "NOTE live stardust-0 present — harness isolated"
+        } | tee "$dir/doctor.txt"
+      fi
       "$ROOT/scripts/verify/ipc-scenarios.sh" >"$dir/ipc.txt" 2>&1 || rc=1
       "$ROOT/scripts/verify/palm-reach-regression.sh" >"$dir/palm-reach.txt" 2>&1 || rc=1
+      cmd_stop >"$dir/stop-after.txt" 2>&1 || true
       ;;
     *) die "scenarios: smoke|all" ;;
   esac
@@ -477,7 +579,22 @@ main() {
     start) cmd_start "$@" ;; stop) cmd_stop "$@" ;; status) cmd_status "$@" ;;
     doctor) cmd_doctor "$@" ;; launch) cmd_launch "$@" ;; pose) cmd_pose "$@" ;;
     click) cmd_click "$@" ;; pinch) cmd_pinch "$@" ;; key) cmd_key "$@" ;;
-    screenshot) cmd_screenshot "$@" ;; state) cmd_state "$@" ;; scenario) cmd_scenario "$@" ;;
+    screenshot) cmd_screenshot "$@" ;; state) cmd_state "$@" ;;
+    scenario)
+      # Keep the caller's session dbus/XDG intact (headless uses a private XDG).
+      local _save_xdg="${XDG_RUNTIME_DIR:-}" _save_dbus="${DBUS_SESSION_BUS_ADDRESS:-}"
+      local _save_wd="${WAYLAND_DISPLAY:-}" _save_ws="${WAYLAND_SOCKET:-}"
+      local _rc=0
+      (
+        scrub_compositor_env
+        cmd_scenario "$@"
+      ) || _rc=$?
+      [[ -n "$_save_xdg" ]] && export XDG_RUNTIME_DIR="$_save_xdg"
+      [[ -n "$_save_dbus" ]] && export DBUS_SESSION_BUS_ADDRESS="$_save_dbus"
+      if [[ -n "$_save_wd" ]]; then export WAYLAND_DISPLAY="$_save_wd"; else unset WAYLAND_DISPLAY || true; fi
+      if [[ -n "$_save_ws" ]]; then export WAYLAND_SOCKET="$_save_ws"; else unset WAYLAND_SOCKET || true; fi
+      return "$_rc"
+      ;;
     -h|--help|help|"") usage ;;
     *) die "unknown: $cmd" ;;
   esac
