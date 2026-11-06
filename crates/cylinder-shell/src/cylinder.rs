@@ -59,8 +59,14 @@ pub struct PanelSlot {
     pub id: SlotId,
     /// Centre angle on the cylinder (radians, + = right), relative to group yaw.
     pub yaw_rad: f32,
+    /// Layout / mesh width (metres). May be scaled down by [`CylinderState::relayout`]
+    /// when the side would wrap past ±π; restored when radius grows again.
     pub width_m: f32,
     pub height_m: f32,
+    /// Unscaled width from the worker's metrics. Packing always starts from this so a
+    /// later larger radius can undo a previous overflow shrink. Not sent over IPC.
+    #[serde(skip)]
+    natural_width_m: f32,
 }
 
 /// Metrics a worker reports when registering or on resize.
@@ -87,7 +93,13 @@ impl CylinderState {
         let id = SlotId(self.next_id.max(1));
         self.next_id = id.0 + 1;
         let (w, h) = metrics.size_m();
-        self.slots.push(PanelSlot { id, yaw_rad: 0.0, width_m: w, height_m: h });
+        self.slots.push(PanelSlot {
+            id,
+            yaw_rad: 0.0,
+            width_m: w,
+            height_m: h,
+            natural_width_m: w,
+        });
         self.relayout();
         self.slot(id).cloned().unwrap()
     }
@@ -101,6 +113,7 @@ impl CylinderState {
     pub fn update_metrics(&mut self, id: SlotId, metrics: &PanelMetrics) -> Option<PanelSlot> {
         let (w, h) = metrics.size_m();
         let s = self.slots.iter_mut().find(|s| s.id == id)?;
+        s.natural_width_m = w;
         s.width_m = w;
         s.height_m = h;
         self.relayout();
@@ -132,13 +145,57 @@ impl CylinderState {
     }
 
     /// Arc-length packing -> yaw. Arc widths are radius-independent, so angles scale 1/r.
+    ///
+    /// If a side's panels would wrap past the back (±π from the gap), that side's widths
+    /// are uniformly scaled down so the outer edge lands on the back seam. Panels are
+    /// never dropped. Scales are computed from [`PanelSlot::natural_width_m`] so raising
+    /// the radius later restores full size.
     fn relayout(&mut self) {
-        let r = self.radius_m;
+        use std::f32::consts::PI;
+        let r = self.radius_m.max(1e-4);
+        // Available arc length per side: gap edge → back midline.
+        let max_side_arc = (PI * r - self.gap_m * 0.5).max(0.0);
+
+        let side_extent = |idxs: &[usize]| -> f32 {
+            if idxs.is_empty() {
+                return 0.0;
+            }
+            let mut sum = 0.0;
+            for (n, &i) in idxs.iter().enumerate() {
+                let w = self.slots[i].natural_width_m.max(self.slots[i].width_m);
+                sum += w;
+                if n + 1 < idxs.len() {
+                    sum += PANEL_SPACING_M;
+                }
+            }
+            sum
+        };
+        let right_idxs: Vec<usize> = (0..self.slots.len()).filter(|i| i % 2 == 0).collect();
+        let left_idxs: Vec<usize> = (0..self.slots.len()).filter(|i| i % 2 == 1).collect();
+        let re = side_extent(&right_idxs);
+        let le = side_extent(&left_idxs);
+        let right_scale = if re > max_side_arc && re > 1e-6 {
+            max_side_arc / re
+        } else {
+            1.0
+        };
+        let left_scale = if le > max_side_arc && le > 1e-6 {
+            max_side_arc / le
+        } else {
+            1.0
+        };
+
         let (mut right, mut left) = (self.gap_m / 2.0, self.gap_m / 2.0);
         for (i, s) in self.slots.iter_mut().enumerate() {
+            if s.natural_width_m <= 0.0 {
+                s.natural_width_m = s.width_m;
+            }
+            let scale = if i % 2 == 0 { right_scale } else { left_scale };
+            let w = s.natural_width_m * scale;
+            s.width_m = w;
             let edge = if i % 2 == 0 { &mut right } else { &mut left };
-            let centre = *edge + s.width_m / 2.0;
-            *edge += s.width_m + PANEL_SPACING_M;
+            let centre = *edge + w / 2.0;
+            *edge += w + PANEL_SPACING_M;
             s.yaw_rad = if i % 2 == 0 { centre / r } else { -centre / r };
         }
     }
@@ -238,5 +295,47 @@ mod tests {
         assert_eq!(c.radius_m, MIN_RADIUS_M);
         c.set_radius(f32::NAN);
         assert_eq!(c.radius_m, MIN_RADIUS_M);
+    }
+
+    #[test]
+    fn overflow_scales_width_to_fit_half_cylinder_never_drops() {
+        // Flatland Meta-0 alone at r=0.45 needs ~1.66 m of arc; half-circ ≈ 1.41 m → must shrink.
+        let mut c = CylinderState::default();
+        c.gap_m = 0.055;
+        c.set_radius(0.45);
+        // 3440/2070 ≈ 1.662 m wide (Flatland Meta density), one panel on the right.
+        let meta = PanelMetrics {
+            size_px: (3440, 1440),
+            density_px_per_m: 2070.0,
+            app_id: Some("host-mirror-meta-0".into()),
+            title: None,
+        };
+        let edp = PanelMetrics {
+            size_px: (2560, 1600),
+            density_px_per_m: 2300.0,
+            app_id: Some("host-mirror-edp-1".into()),
+            title: None,
+        };
+        let a_id = c.assign_slot(&meta).id; // right
+        let b_id = c.assign_slot(&edp).id; // left
+        assert_eq!(c.slots.len(), 2);
+        let a = c.slot(a_id).unwrap().clone();
+        let b = c.slot(b_id).unwrap().clone();
+        assert!(a.yaw_rad > 0.0 && b.yaw_rad < 0.0);
+        // Outer edges must stay within ±π (back seam).
+        assert!(a.yaw_rad + half_arc_rad(&a, c.radius_m) <= std::f32::consts::PI + 1e-3);
+        assert!(b.yaw_rad.abs() + half_arc_rad(&b, c.radius_m) <= std::f32::consts::PI + 1e-3);
+        assert!(!overlaps(&a, &b, c.radius_m));
+        // Shrunk relative to natural Flatland metres.
+        assert!(a.width_m < 1.662 - 1e-3, "meta width {}", a.width_m);
+        assert!(a.natural_width_m > a.width_m);
+        // Raising radius to Flatland's 0.70 restores full size.
+        c.set_radius(0.70);
+        let a = c.slot(a_id).unwrap().clone();
+        let b = c.slot(b_id).unwrap().clone();
+        assert!((a.width_m - 3440.0 / 2070.0).abs() < 1e-3, "meta restored {}", a.width_m);
+        assert!((b.width_m - 2560.0 / 2300.0).abs() < 1e-3, "edp restored {}", b.width_m);
+        assert!((a.yaw_rad - 1.226).abs() < 0.02, "meta yaw {}", a.yaw_rad); // ~70.3 deg
+        assert!((b.yaw_rad + 0.834).abs() < 0.02, "edp yaw {}", b.yaw_rad); // ~-47.8 deg
     }
 }

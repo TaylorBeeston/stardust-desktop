@@ -1,6 +1,6 @@
 # Cylinder cutover (2026-11-05)
 
-Live `-p` is **cylinder-shell** (not Flatland). Radius default nudged to **0.45**.
+Live `-p` is **cylinder-shell** (not Flatland). Radius default nudged to **0.70**.
 Both host mirrors (eDP-1, Meta-0) launch into the cylinder compositor via
 `stardust-mirrors-autostart` → `stardust-dual-mirror-flat` with
 `STARDUST_WAYLAND_DISPLAY` pinned to the cylinder socket.
@@ -36,4 +36,4 @@ Still disabled in startup.sh (Taylor request). Do not relaunch without OK.
   - Meta-0: 3440×1440 @ density **2070** → **1.662 m**
 - Packing alternates RIGHT, LEFT by registration order. Autostart launches
   `STARDUST_MIRROR_OUTPUTS=Meta-0 eDP-1` so Meta is RIGHT and eDP is LEFT.
-- Radius remains **0.45**.
+- Radius default **0.70** (Flatland).

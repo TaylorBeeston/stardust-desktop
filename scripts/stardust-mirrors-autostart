@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ExecStartPost of stardust-session.service (cylinder cutover): wait for the cylinder
-# wayland-service socket + layout sock, launch eDP-1 + Meta-0 into it, set radius 0.45.
+# wayland-service socket + layout sock, launch eDP-1 + Meta-0 into it, set radius 0.70.
 # Log: $XDG_RUNTIME_DIR/stardust-mirrors-autostart.log
 # Never touches WiVRn / GNOME / grok-bot. Does not REPLACE unless HOST_MIRROR_REPLACE=1.
 RUN="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
@@ -43,7 +43,7 @@ fi
 echo "cylinder WAYLAND_DISPLAY=$sock layout=$LAYOUT_SOCK"
 
 # Reaffirm radius before panels (startup also sets it; mirrors may race)
-CYLINDER_LAYOUT_SOCK="$LAYOUT_SOCK" stardust-cylinder-nudge radius 0.45 || true
+CYLINDER_LAYOUT_SOCK="$LAYOUT_SOCK" stardust-cylinder-nudge radius 0.70 || true
 
 sleep "${STARDUST_MIRRORS_SETTLE:-2}"
 
@@ -56,7 +56,7 @@ export STARDUST_MIRROR_OUTPUTS="${STARDUST_MIRROR_OUTPUTS:-Meta-0 eDP-1}"
 # Avoid dual-mirror autodetection picking a stale/side socket
 "$HOME/.local/bin/stardust-dual-mirror-flat"
 
-# After both mirrors register, set radius again so GroupChanged rebakes at 0.45
+# After both mirrors register, set radius again so GroupChanged rebakes at 0.70
 sleep 2
-CYLINDER_LAYOUT_SOCK="$LAYOUT_SOCK" stardust-cylinder-nudge radius 0.45 || true
+CYLINDER_LAYOUT_SOCK="$LAYOUT_SOCK" stardust-cylinder-nudge radius 0.70 || true
 echo "== $(date '+%F %T') mirrors autostart done"
