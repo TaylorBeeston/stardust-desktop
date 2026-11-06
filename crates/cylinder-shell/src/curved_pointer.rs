@@ -4,7 +4,7 @@
 
 use crate::field_shape::field_shape_for_slice;
 use crate::hit_test::CylinderSliceHitTest;
-use crate::palm_wm::{self, PalmShape};
+use crate::palm_wm::{self, ReachArming, ReachConfig};
 use crate::pointer_uv::{mesh_local_point_hit, mesh_local_ray_hit, OVERLAY_INSET_M, SliceHit};
 use glam::Vec3;
 use stardust_xr_asteroids::{Context, CreateInnerInfo, CustomElement, FnWrapper, ValidState};
@@ -111,10 +111,8 @@ pub struct CurvedPointerInner {
     right: SingleAction,
     /// Flatland-style hover ray/line + hit cursor (updated every input frame).
     lines: Lines,
-    palm_shape: PalmShape,
-    /// True while fist-grabbing for panel slide.
-    palm_grabbing: bool,
-    /// UV.u + panel yaw at grab start.
+    reach: ReachArming,
+    /// UV.u at grab start (panel slide).
     palm_grab_u0: Option<f32>,
     palm_grab_yaw0: Option<f32>,
     palm_highlight: bool,
@@ -143,8 +141,7 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
             middle: SingleAction::default(),
             right: SingleAction::default(),
             lines,
-            palm_shape: PalmShape::Open,
-            palm_grabbing: false,
+            reach: ReachArming::new(ReachConfig::from_env()),
             palm_grab_u0: None,
             palm_grab_yaw0: None,
             palm_highlight: false,
@@ -170,41 +167,19 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
             return;
         }
         let h = self.hit_test;
-        {
-            use std::sync::atomic::{AtomicU32, Ordering};
-            static N: AtomicU32 = AtomicU32::new(0);
-            let q = inner.input.input();
-            if !q.is_empty() && N.fetch_add(1, Ordering::Relaxed) % 90 == 0 {
-                let hits = q.values().filter(|s| snapshot_hit(&h, s.input()).is_some()).count();
-                let desc: Vec<String> = q.values().map(|s| match s.input() {
-                    InputDataType::Pointer { data } => format!("ptr o={:?} d={:?} dist={:.3}", Vec3::from(data.pose.position), Vec3::from(data.direction()), s.distance()),
-                    InputDataType::Hand { data } => format!("hand tip={:?} pinch_gap={:.3} captured={} dist={:.3}", Vec3::from(data.index.tip.pose.position), Vec3::from(data.thumb.tip.pose.position).distance(Vec3::from(data.index.tip.pose.position)), s.captured(), s.distance()),
-                    InputDataType::Tip { data } => format!("tip p={:?} dist={:.3}", Vec3::from(data.pose.position), s.distance()),
-                }).collect();
-                tracing::info!(
-                    inputs = q.len(),
-                    hits,
-                    ?desc,
-                    palm_shape = ?inner.palm_shape,
-                    palm_grabbing = inner.palm_grabbing,
-                    palm_hl = inner.palm_highlight,
-                    r = h.radius_m,
-                    "xr input frame"
-                );
-            }
-        }
         let input = inner.input.input();
+        let now = std::time::Instant::now();
 
-        // --- Evaluate palm reach FIRST so we can suppress Hand → mouse. ---
+        // --- Palm reach evaluation (before mouse forwarding) ---
         let mut palm_hit: Option<SliceHit> = None;
-        let mut palm_origin: Option<Vec3> = None;
-        let mut palm_aim_end: Option<Vec3> = None;
-        let mut shape_now = inner.palm_shape;
-        let mut pinching = false;
-        let mut saw_hand = false;
+        let mut viz_origin: Option<Vec3> = None;
+        let mut viz_end: Option<Vec3> = None;
+        let mut debug_line: Option<String> = None;
+        let mut was_grabbing = inner.reach.grabbing;
+        let mut was_armed = inner.reach.armed;
+
         for snap in input.values() {
             let InputDataType::Hand { data } = snap.input() else { continue };
-            saw_hand = true;
             let palm = Vec3::from(data.palm.pose.position);
             let tips = [
                 Vec3::from(data.index.tip.pose.position).to_array(),
@@ -212,49 +187,91 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
                 Vec3::from(data.ring.tip.pose.position).to_array(),
                 Vec3::from(data.little.tip.pose.position).to_array(),
             ];
-            let openness = palm_wm::hand_openness(palm.to_array(), tips);
+            let dists = palm_wm::finger_tip_distances(palm.to_array(), tips);
             let pinch_gap = Vec3::from(data.thumb.tip.pose.position)
                 .distance(Vec3::from(data.index.tip.pose.position));
-            pinching = pinch_gap < palm_wm::PINCH_M;
-            shape_now = palm_wm::classify_palm(openness, inner.palm_shape);
-            palm_origin = Some(palm);
+            let _pinching = pinch_gap < palm_wm::PINCH_M;
+            let right = matches!(data.chirality, stardust_xr_fusion::suis::Chirality::Right);
             let o = data.palm.pose.orientation;
-            let dirs = palm_wm::reach_ray_dirs(
-                palm.to_array(),
-                [o.v.x, o.v.y, o.v.z, o.s],
-                h.radius_m,
-            );
-            // Prefer first ray that hits this panel slice; keep visual end even on miss.
-            let mut chosen_dir = Vec3::from(dirs[0]);
-            for d in dirs {
-                let dir = Vec3::from(d);
-                if dir.length_squared() < 1e-12 {
-                    continue;
+            let axes = palm_wm::hand_axes_from_quat(palm.to_array(), [o.v.x, o.v.y, o.v.z, o.s], right);
+            // Prefer protocol palm_normal if available (same as −Y).
+            let proto_n = Vec3::from(data.palm_normal());
+            let axes = palm_wm::HandAxes {
+                palm_normal: proto_n.to_array(),
+                palm_back: (-proto_n).to_array(),
+                distal: Vec3::from(data.distal_axis()).to_array(),
+                ..axes
+            };
+            let toward = palm_wm::toward_cylinder_content(palm.to_array(), h.radius_m);
+            let live_dir = palm_wm::reach_direction(&axes, inner.reach.cfg());
+            let live_origin = palm_wm::reach_origin(&axes, inner.reach.cfg());
+            inner.reach.step(now, dists, &axes, toward, pinch_gap, live_dir, live_origin);
+
+            if palm_wm::palm_debug_enabled() {
+                use std::sync::atomic::{AtomicU32, Ordering};
+                static N: AtomicU32 = AtomicU32::new(0);
+                if N.fetch_add(1, Ordering::Relaxed) % 30 == 0 {
+                    let face = Vec3::from(axes.palm_normal).dot(Vec3::from(toward));
+                    debug_line = Some(format!(
+                        "palm_dbg right={right} dists={dists:?} mean={:.3} pinch={:.3} n={:?} back={:?} distal={:?} toward={:?} face_dot={:.2} armed={} grab={} shape={:?}",
+                        palm_wm::mean_tip_distance(dists),
+                        pinch_gap,
+                        axes.palm_normal,
+                        axes.palm_back,
+                        axes.distal,
+                        toward,
+                        face,
+                        inner.reach.armed,
+                        inner.reach.grabbing,
+                        inner.reach.shape,
+                    ));
                 }
-                chosen_dir = dir;
-                if let Some(hit) = mesh_local_ray_hit(&h, palm.to_array(), dir.to_array()) {
+            }
+
+            if let Some((orig, dir)) = inner.reach.aim() {
+                viz_origin = Some(Vec3::from(orig));
+                if let Some(hit) = mesh_local_ray_hit(&h, orig, dir) {
                     palm_hit = Some(hit);
-                    let surf = Vec3::from(h.surface_point(hit.uv.0, hit.uv.1, OVERLAY_INSET_M));
-                    palm_aim_end = Some(surf);
-                    break;
+                    viz_end = Some(Vec3::from(h.surface_point(hit.uv.0, hit.uv.1, OVERLAY_INSET_M)));
+                } else {
+                    viz_end = Some(Vec3::from(orig) + Vec3::from(dir) * 0.8);
                 }
             }
-            if palm_aim_end.is_none() {
-                palm_aim_end = Some(palm + chosen_dir.normalize_or_zero() * palm_wm::REACH_MAX_M.min(0.8));
-            }
-            // Near-field fallback when ray misses but palm is beside the panel.
-            if palm_hit.is_none() {
-                if let Some(hit) = mesh_local_point_hit(&h, palm.to_array())
-                    .filter(|hit| HAND_HOVER.contains(&hit.distance))
-                {
-                    palm_hit = Some(hit);
-                }
-            }
-            break; // first Hand wins
+            break;
         }
-        inner.palm_shape = shape_now;
-        let suppress = saw_hand
-            && palm_wm::suppress_hand_pointer(shape_now, pinching, inner.palm_grabbing);
+        if let Some(line) = debug_line {
+            tracing::info!("{line}");
+        }
+
+        let suppress = {
+            let gap = input.values().find_map(|s| match s.input() {
+                InputDataType::Hand { data } => Some(
+                    Vec3::from(data.thumb.tip.pose.position)
+                        .distance(Vec3::from(data.index.tip.pose.position)),
+                ),
+                _ => None,
+            }).unwrap_or(1.0);
+            inner.reach.suppress_pointer(gap)
+        };
+
+        {
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static N: AtomicU32 = AtomicU32::new(0);
+            let q = &input;
+            if !q.is_empty() && N.fetch_add(1, Ordering::Relaxed) % 90 == 0 {
+                let hits = q.values().filter(|s| snapshot_hit(&h, s.input()).is_some()).count();
+                tracing::info!(
+                    inputs = q.len(),
+                    hits,
+                    armed = inner.reach.armed,
+                    grabbing = inner.reach.grabbing,
+                    shape = ?inner.reach.shape,
+                    suppress,
+                    r = h.radius_m,
+                    "xr input frame"
+                );
+            }
+        }
 
         let hovering = |s: &InputSnapshot| snapshot_hit(&h, s.input()).is_some();
         let pressed = |key: &'static str, finger: fn(&stardust_xr_fusion::suis::Hand) -> &stardust_xr_fusion::suis::Finger| {
@@ -266,7 +283,6 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
             }
         };
 
-        // Closest hit drives motion — but Hand is skipped while palm-reach owns input.
         let best = input
             .values()
             .filter(|s| {
@@ -286,15 +302,12 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
             }
         }
 
-        // Buttons: when suppressing, Hand cannot start pinch-click either until pinching
-        // (suppress is false when pinching, so click still works).
         for (action, btn, interact) in [
             (&mut inner.left, BTN_LEFT, Box::new(pressed("select", |h| &h.index)) as Box<dyn Fn(&InputSnapshot) -> bool>),
             (&mut inner.middle, BTN_MIDDLE, Box::new(pressed("middle", |h| &h.middle))),
             (&mut inner.right, BTN_RIGHT, Box::new(pressed("context", |h| &h.ring))),
         ] {
             if suppress {
-                // Keep Hand out of button capture while reaching.
                 action.update(
                     false,
                     &inner.input,
@@ -312,76 +325,58 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
             }
         }
 
-        // --- Palm WM: highlight → fist slide → open settle ---
-        if pinching {
-            if inner.palm_grabbing {
-                inner.palm_grabbing = false;
-                inner.palm_grab_u0 = None;
+        // Highlight / slide / settle from arming state machine.
+        let want_hl = inner.reach.armed && !inner.reach.grabbing && palm_hit.is_some();
+        if want_hl != inner.palm_highlight {
+            inner.palm_highlight = want_hl;
+            (self.on_palm_highlight.0)(state, want_hl);
+            if want_hl {
+                tracing::info!(?palm_hit, "palm reach highlight panel");
+            }
+        }
+        if inner.reach.grabbing && !was_grabbing {
+            if let Some(hit) = palm_hit {
+                inner.palm_grab_u0 = Some(hit.uv.0);
                 inner.palm_grab_yaw0 = None;
-                (self.on_palm_settle.0)(state);
+                (self.on_palm_highlight.0)(state, true);
+                inner.palm_highlight = true;
+                (self.on_palm_slide.0)(state, 0.0);
+                tracing::info!(u = hit.uv.0, "palm fist grab panel");
             }
-            if inner.palm_highlight {
-                inner.palm_highlight = false;
-                (self.on_palm_highlight.0)(state, false);
+        } else if inner.reach.grabbing {
+            if let Some(hit) = palm_hit {
+                let u0 = inner.palm_grab_u0.unwrap_or(0.5);
+                let dyaw = palm_wm::slide_yaw_from_uv_delta(0.0, u0, hit.uv.0, h.width_m, h.radius_m);
+                (self.on_palm_slide.0)(state, dyaw);
             }
-        } else {
-            let want_hl = palm_hit.is_some() && shape_now == PalmShape::Open && !inner.palm_grabbing;
-            if want_hl != inner.palm_highlight {
-                inner.palm_highlight = want_hl;
-                (self.on_palm_highlight.0)(state, want_hl);
-                if want_hl {
-                    tracing::info!(?palm_hit, "palm reach highlight panel");
-                }
-            }
-            match (inner.palm_grabbing, shape_now, palm_hit) {
-                (false, PalmShape::Fist, Some(hit)) if inner.palm_highlight || suppress => {
-                    // Allow grab start even if highlight flickered; open→fist with a hit.
-                    inner.palm_grabbing = true;
-                    inner.palm_grab_u0 = Some(hit.uv.0);
-                    inner.palm_grab_yaw0 = None;
-                    inner.palm_highlight = true;
-                    (self.on_palm_highlight.0)(state, true);
-                    (self.on_palm_slide.0)(state, 0.0);
-                    tracing::info!(u = hit.uv.0, "palm fist grab panel");
-                }
-                (true, PalmShape::Fist, Some(hit)) => {
-                    let u0 = inner.palm_grab_u0.unwrap_or(0.5);
-                    let dyaw = palm_wm::slide_yaw_from_uv_delta(0.0, u0, hit.uv.0, h.width_m, h.radius_m);
-                    (self.on_palm_slide.0)(state, dyaw);
-                }
-                (true, PalmShape::Open, _) => {
-                    inner.palm_grabbing = false;
-                    inner.palm_grab_u0 = None;
-                    inner.palm_grab_yaw0 = None;
-                    (self.on_palm_settle.0)(state);
-                    let hl = palm_hit.is_some();
-                    inner.palm_highlight = hl;
-                    (self.on_palm_highlight.0)(state, hl);
-                    tracing::info!("palm open settle panel");
-                }
-                (true, _, None) => {
-                    // Lost ray while fist — keep grab.
-                }
-                _ => {}
-            }
+        } else if was_grabbing {
+            inner.palm_grab_u0 = None;
+            inner.palm_grab_yaw0 = None;
+            (self.on_palm_settle.0)(state);
+            let hl = want_hl;
+            inner.palm_highlight = hl;
+            (self.on_palm_highlight.0)(state, hl);
+            tracing::info!("palm open settle panel");
+        } else if was_armed && !inner.reach.armed && inner.palm_highlight {
+            inner.palm_highlight = false;
+            (self.on_palm_highlight.0)(state, false);
         }
 
         let interacting = inner.left.actor_acting()
             || inner.middle.actor_acting()
             || inner.right.actor_acting()
-            || inner.palm_grabbing;
+            || inner.reach.grabbing;
         let mut viz: Vec<Line> = Vec::new();
-        // Reach ray (visible "extend my reach") while open or grabbing, not pinching.
         if suppress {
-            if let (Some(o), Some(e)) = (palm_origin, palm_aim_end) {
-                let col = if inner.palm_grabbing {
+            if let (Some(o), Some(e)) = (viz_origin, viz_end) {
+                let col = if inner.reach.grabbing {
                     rgba_linear!(0.2, 0.95, 0.55, 0.95)
                 } else if palm_hit.is_some() {
                     rgba_linear!(0.35, 0.85, 1.0, 0.9)
                 } else {
                     rgba_linear!(0.7, 0.75, 0.85, 0.55)
                 };
-                let end_col = if inner.palm_grabbing {
+                let end_col = if inner.reach.grabbing {
                     rgba_linear!(0.2, 0.95, 0.55, 0.0)
                 } else if palm_hit.is_some() {
                     rgba_linear!(0.35, 0.85, 1.0, 0.0)
@@ -397,7 +392,7 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
                 });
             }
             if let Some(hit) = palm_hit {
-                viz.push(hover_cursor_ring(&h, hit, inner.palm_grabbing));
+                viz.push(hover_cursor_ring(&h, hit, inner.reach.grabbing));
             }
         } else if let Some((snap, hit)) = best {
             if let Some(line) = hover_line_from_input(&h, snap, hit, interacting) {

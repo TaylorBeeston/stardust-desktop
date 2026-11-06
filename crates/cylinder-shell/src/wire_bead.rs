@@ -3,7 +3,7 @@
 //! Parent of the Lines Spatial is `client.root()` (cylinder frame), not the panel
 //! Entity — same frame as [`crate::panel::SlotPlacement`].
 
-use crate::palm_wm::{self, PalmShape};
+use crate::palm_wm::{self, ReachArming, ReachConfig};
 use crate::wire::{
     bead_polylines, grab_frame_deltas, ring_polylines, BeadVisualState, WireLayout, BEAD_GRAB_M,
     BEAD_THICKNESS, RING_THICKNESS,
@@ -64,10 +64,8 @@ pub struct WireBeadInner {
     /// Last hand point while grabbing (cylinder frame), for per-frame deltas.
     last_grab_pt: Option<Vec3>,
     drawn_key: Option<(u64, BeadVisualState)>,
-    /// Open-palm reach state (fist grabs bead at distance via ray).
-    palm_shape: PalmShape,
+    reach: ReachArming,
     palm_aim_bead: bool,
-    palm_reach_grab: bool,
     /// Last drawn reach ray endpoints (for visual keying).
     reach_viz: Option<(Vec3, Vec3)>,
 }
@@ -176,9 +174,8 @@ impl<State: ValidState> CustomElement<State> for WireBead<State> {
             grab: SingleAction::default(),
             last_grab_pt: None,
             drawn_key: Some((layout_key(&self.layout), 0)),
-            palm_shape: PalmShape::Open,
+            reach: ReachArming::new(ReachConfig::from_env()),
             palm_aim_bead: false,
-            palm_reach_grab: false,
             reach_viz: None,
         })
     }
@@ -207,13 +204,11 @@ impl<State: ValidState> CustomElement<State> for WireBead<State> {
             .input()
             .values()
             .any(|s| hand_point(s).is_some_and(|p| p.distance(bead) < BEAD_GRAB_M * 2.5));
-
-        // --- Palm reach: open aims, fist grabs bead at distance ---
-        let mut pinching = false;
-        let mut shape_now = inner.palm_shape;
-        let mut aim = false;
-        let mut palm_pt: Option<Vec3> = None;
+        let now = std::time::Instant::now();
+        let mut was_grabbing = inner.reach.grabbing;
         let mut ray_end: Option<Vec3> = None;
+        let mut palm_pt: Option<Vec3> = None;
+
         for snap in inner.input.input().values() {
             let InputDataType::Hand { data } = snap.input() else { continue };
             let palm = Vec3::from(data.palm.pose.position);
@@ -224,52 +219,53 @@ impl<State: ValidState> CustomElement<State> for WireBead<State> {
                 Vec3::from(data.ring.tip.pose.position).to_array(),
                 Vec3::from(data.little.tip.pose.position).to_array(),
             ];
-            let openness = palm_wm::hand_openness(palm.to_array(), tips);
+            let dists = palm_wm::finger_tip_distances(palm.to_array(), tips);
             let pinch_gap = Vec3::from(data.thumb.tip.pose.position)
                 .distance(Vec3::from(data.index.tip.pose.position));
-            pinching = pinch_gap < palm_wm::PINCH_M;
-            shape_now = palm_wm::classify_palm(openness, inner.palm_shape);
+            let _pinching = pinch_gap < palm_wm::PINCH_M;
+            let right = matches!(data.chirality, stardust_xr_fusion::suis::Chirality::Right);
             let o = data.palm.pose.orientation;
-            let dirs = palm_wm::reach_ray_dirs(
-                palm.to_array(),
-                [o.v.x, o.v.y, o.v.z, o.s],
-                self.layout.radius_m,
-            );
-            for d in dirs {
-                if palm_wm::ray_hits_bead(palm.to_array(), d, bead.to_array(), palm_wm::BEAD_RAY_HIT_M) {
-                    aim = true;
-                    if let Some((closest, _)) = palm_wm::ray_closest_point(palm.to_array(), d, bead.to_array()) {
+            let mut axes = palm_wm::hand_axes_from_quat(palm.to_array(), [o.v.x, o.v.y, o.v.z, o.s], right);
+            let proto_n = Vec3::from(data.palm_normal());
+            axes.palm_normal = proto_n.to_array();
+            axes.palm_back = (-proto_n).to_array();
+            axes.distal = Vec3::from(data.distal_axis()).to_array();
+            let toward = palm_wm::toward_cylinder_content(palm.to_array(), self.layout.radius_m);
+            let live_dir = palm_wm::reach_direction(&axes, inner.reach.cfg());
+            let live_origin = palm_wm::reach_origin(&axes, inner.reach.cfg());
+            inner.reach.step(now, dists, &axes, toward, pinch_gap, live_dir, live_origin);
+
+            if let Some((orig, dir)) = inner.reach.aim() {
+                if palm_wm::ray_hits_bead(orig, dir, bead.to_array(), palm_wm::BEAD_RAY_HIT_M) {
+                    if let Some((closest, _)) = palm_wm::ray_closest_point(orig, dir, bead.to_array()) {
                         ray_end = Some(Vec3::from(closest));
                     }
-                    break;
+                    inner.palm_aim_bead = inner.reach.armed && !inner.reach.grabbing;
+                } else {
+                    inner.palm_aim_bead = false;
+                    ray_end = Some(Vec3::from(orig) + Vec3::from(dir) * 0.8);
                 }
-            }
-            if ray_end.is_none() {
-                let dir = Vec3::from(dirs[0]).normalize_or_zero();
-                ray_end = Some(palm + dir * 0.8);
+            } else {
+                inner.palm_aim_bead = false;
             }
             break;
         }
-        inner.palm_shape = shape_now;
 
-        if pinching {
-            // Pinch prefers near-bead SingleAction path below; cancel reach grab.
-            if inner.palm_reach_grab {
-                inner.palm_reach_grab = false;
-                inner.last_grab_pt = None;
-                (self.on_grab_end.0)(state);
-                tracing::info!("cylinder bead palm-reach cancelled by pinch");
-            }
-            inner.palm_aim_bead = false;
-        } else {
-            match (inner.palm_reach_grab, shape_now, aim || inner.palm_aim_bead) {
-                (false, PalmShape::Fist, true) => {
-                    inner.palm_reach_grab = true;
-                    inner.palm_aim_bead = true;
+        // Palm-reach bead grab (distant).
+        if inner.reach.grabbing && !was_grabbing && (inner.palm_aim_bead || ray_end.is_some()) {
+            // Only claim bead if aim was on bead at grab start — check locked ray.
+            if let Some((o, d)) = inner.reach.aim() {
+                if palm_wm::ray_hits_bead(o, d, bead.to_array(), palm_wm::BEAD_RAY_HIT_M) {
                     inner.last_grab_pt = palm_pt.or(ray_end);
                     tracing::info!(bead = ?bead, "cylinder bead palm-reach grabbed");
                 }
-                (true, PalmShape::Fist, _) => {
+            }
+        }
+        if inner.reach.grabbing {
+            if let Some((o, d)) = inner.reach.aim() {
+                if palm_wm::ray_hits_bead(o, d, bead.to_array(), palm_wm::BEAD_RAY_HIT_M * 1.5)
+                    || was_grabbing
+                {
                     if let Some(p) = palm_pt.or(ray_end) {
                         if let Some(prev) = inner.last_grab_pt {
                             let (dyaw, dh) = grab_frame_deltas(prev, p);
@@ -280,42 +276,28 @@ impl<State: ValidState> CustomElement<State> for WireBead<State> {
                         inner.last_grab_pt = Some(p);
                     }
                 }
-                (true, PalmShape::Open, _) => {
-                    inner.palm_reach_grab = false;
-                    inner.last_grab_pt = None;
-                    (self.on_grab_end.0)(state);
-                    tracing::info!("cylinder bead palm-reach released");
-                }
-                _ => {}
             }
-            inner.palm_aim_bead = aim && shape_now == PalmShape::Open && !inner.palm_reach_grab;
+        } else if was_grabbing {
+            if inner.last_grab_pt.is_some() {
+                inner.last_grab_pt = None;
+                (self.on_grab_end.0)(state);
+                tracing::info!("cylinder bead palm-reach released");
+            }
         }
 
-        // Direct near-bead pinch/grab (unchanged), suppressed while palm-reach owns the bead.
-        if !inner.palm_reach_grab {
+        let palm_owns = inner.reach.grabbing
+            && inner
+                .reach
+                .aim()
+                .is_some_and(|(o, d)| palm_wm::ray_hits_bead(o, d, bead.to_array(), palm_wm::BEAD_RAY_HIT_M * 1.5));
+
+        if !palm_owns {
             inner.grab.update(
                 true,
                 &inner.input,
                 |s| hand_point(s).is_some_and(on_bead),
                 pinch_or_grab,
             );
-        } else {
-            // Force-release direct grab if it was acting.
-            if inner.grab.actor_acting() {
-                // SingleAction has no force stop; just ignore deltas while reach owns.
-            }
-        }
-
-        let acting = inner.palm_reach_grab || inner.grab.actor_acting();
-        let visual: BeadVisualState = if acting {
-            2
-        } else if near || inner.palm_aim_bead {
-            1
-        } else {
-            0
-        };
-
-        if !inner.palm_reach_grab {
             if inner.grab.actor_started() {
                 inner.last_grab_pt = inner.grab.actor().and_then(|s| hand_point(s));
                 tracing::info!(bead = ?bead, "cylinder bead grabbed");
@@ -338,10 +320,19 @@ impl<State: ValidState> CustomElement<State> for WireBead<State> {
             }
         }
 
+        let acting = palm_owns || inner.grab.actor_acting();
+        let visual: BeadVisualState = if acting {
+            2
+        } else if near || inner.palm_aim_bead {
+            1
+        } else {
+            0
+        };
+
         let mut lines = build_wire_lines(&self.layout, visual);
-        if (inner.palm_aim_bead || inner.palm_reach_grab) && !pinching {
+        if (inner.palm_aim_bead || palm_owns) && inner.reach.aim().is_some() {
             if let (Some(o), Some(e)) = (palm_pt, ray_end) {
-                let col = if inner.palm_reach_grab {
+                let col = if palm_owns {
                     rgba_linear!(0.2, 0.95, 0.55, 0.95)
                 } else {
                     rgba_linear!(0.35, 0.85, 1.0, 0.9)
@@ -364,7 +355,6 @@ impl<State: ValidState> CustomElement<State> for WireBead<State> {
         }
 
         let key = (layout_key(&self.layout), visual);
-        // Always refresh when reach ray present (endpoints move every frame).
         if inner.drawn_key != Some(key) || inner.reach_viz.is_some() {
             inner.drawn_key = Some(key);
             let _ = inner.lines.set_lines(lines);

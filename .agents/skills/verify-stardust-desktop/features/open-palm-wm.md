@@ -1,18 +1,20 @@
 # Open-palm window management + reach ray
 
-## Behaviour
-- **Open palm** aims a visible reach ray; Hand → panel mouse is **suppressed** (pinch still clicks).
-- **Fist** grabs whatever the ray hits: panel (Slide/Settle IPC) or cylinder bead (GroupGrab at distance).
-- **Open** again releases / settles.
-- Hysteresis on openness; pinch aborts reach and restores click.
+## Fitted behaviour (2026-11-06 labeled takes)
+- Ray = protocol **palm_normal (−Y)**, blended toward distal; not +Y (back of hand).
+- Arm only when: fingers extended (`mean≥0.112`, `min≥0.092`), palm faces content (`n·toward≥0.50`),
+  distal not too up (`distal.y≤0.915`, rejects Back of hand), held ~150 ms.
+- Fist/Loose fist: `mean_tip≤0.062` **before** pinch check; Pinch/Relaxed stay click/idle.
+- Pinch still clicks when not fist-curled.
 
 ## Drive without headset
 ```bash
 scripts/verify/palm-reach-regression.sh
-# or:
-cargo test -p cylinder-shell --lib palm_wm
-cargo test -p cylinder-shell --lib sim_hands
+# fixtures: crates/cylinder-shell/tests/fixtures/hand_poses/
 ```
 
-## Headset check
-Open palm toward a mirror: ray visible, mouse must NOT move. Fist: panel slides. Aim at distant bead (even “inside desk”): fist moves cylinder. Pinch still clicks.
+## Capture more labels
+```bash
+STARDUST_INSTANCE=stardust-0 ~/.local/bin/hand-pose-recorder
+# → ~/.local/state/hand-pose-recorder/
+```

@@ -1,0 +1,98 @@
+[
+  {
+    "file": "left_back_of_hand.json",
+    "label": "Back of hand",
+    "chirality": "left",
+    "n": 8
+  },
+  {
+    "file": "right_back_of_hand.json",
+    "label": "Back of hand",
+    "chirality": "right",
+    "n": 8
+  },
+  {
+    "file": "left_fist.json",
+    "label": "Fist",
+    "chirality": "left",
+    "n": 8
+  },
+  {
+    "file": "right_fist.json",
+    "label": "Fist",
+    "chirality": "right",
+    "n": 8
+  },
+  {
+    "file": "left_loose_fist.json",
+    "label": "Loose fist",
+    "chirality": "left",
+    "n": 8
+  },
+  {
+    "file": "right_loose_fist.json",
+    "label": "Loose fist",
+    "chirality": "right",
+    "n": 8
+  },
+  {
+    "file": "left_open_palm_aimed_at_panel.json",
+    "label": "Open palm (aimed at panel)",
+    "chirality": "left",
+    "n": 8
+  },
+  {
+    "file": "right_open_palm_aimed_at_panel.json",
+    "label": "Open palm (aimed at panel)",
+    "chirality": "right",
+    "n": 8
+  },
+  {
+    "file": "left_palm_facing_me.json",
+    "label": "Palm facing me",
+    "chirality": "left",
+    "n": 8
+  },
+  {
+    "file": "right_palm_facing_me.json",
+    "label": "Palm facing me",
+    "chirality": "right",
+    "n": 8
+  },
+  {
+    "file": "left_pinch.json",
+    "label": "Pinch",
+    "chirality": "left",
+    "n": 8
+  },
+  {
+    "file": "right_pinch.json",
+    "label": "Pinch",
+    "chirality": "right",
+    "n": 8
+  },
+  {
+    "file": "left_point.json",
+    "label": "Point",
+    "chirality": "left",
+    "n": 8
+  },
+  {
+    "file": "right_point.json",
+    "label": "Point",
+    "chirality": "right",
+    "n": 8
+  },
+  {
+    "file": "left_relaxed.json",
+    "label": "Relaxed",
+    "chirality": "left",
+    "n": 16
+  },
+  {
+    "file": "right_relaxed.json",
+    "label": "Relaxed",
+    "chirality": "right",
+    "n": 8
+  }
+]

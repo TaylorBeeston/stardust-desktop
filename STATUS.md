@@ -62,3 +62,11 @@ Sample frames in `docs/verify-screenshots/`. Live session untouched. See skill +
 - **Root cause (measured):** Hand XR input reached `cylinder-shell`; open palm still drove `on_motion` → host-mirror mouse. Palm WM ray rarely hit; bead grab was near-field only.
 - **Fix:** Open palm / fist-grab suppresses Hand→mouse; visible reach ray; fist grabs panel (Slide/Settle) or distant bead (GroupGrab). Pinch still clicks.
 - **Verify:** `scripts/verify/palm-reach-regression.sh` (sim_hands + palm_wm). Needs session restart to pick up staged `cylinder-shell`.
+
+## Palm reach fit (2026-11-06)
+
+Labeled takes (right+left) via `hand-pose-recorder`. Fitted: ray = palm_normal (−Y); gate
+extend_m=0.112 / extend_min=0.092 / face_dot=0.50 / max_distal_up=0.915 / hold=150ms;
+fist_m=0.062 (before pinch). Held-out: Open 100% arm, Back/FaceMe/Relaxed/Point/Pinch 0%;
+Fist+Loose 100% grab. Fixtures under `crates/cylinder-shell/tests/fixtures/hand_poses/`.
+Needs session restart for staged `cylinder-shell`.

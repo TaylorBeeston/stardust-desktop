@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/host-mirror", "crates/desk-toys", "crates/cylinder-shell"]
+members = ["crates/host-mirror", "crates/desk-toys", "crates/cylinder-shell", "crates/hand-pose-recorder"]
 
 [profile.release]
 debug = false
