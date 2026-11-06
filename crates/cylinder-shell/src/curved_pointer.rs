@@ -295,14 +295,13 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
                 let every = if palm_wm::palm_debug_enabled() { 30 } else { 90 };
                 if N.fetch_add(1, Ordering::Relaxed) % every == 0 {
                     let g = hand.gate;
+                    // Face is tie-break only — never blocks arming.
                     let reject = if g.ok {
                         "none"
                     } else if g.pinching {
                         "pinch"
                     } else if !g.extend {
                         "extend"
-                    } else if !g.face {
-                        "face"
                     } else if !g.distal {
                         "distal"
                     } else {

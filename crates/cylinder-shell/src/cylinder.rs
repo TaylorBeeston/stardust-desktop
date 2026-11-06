@@ -1,6 +1,7 @@
 //! Shared cylinder group state. Owned by `cylinder-layout`; workers hold snapshots.
 
 use serde::{Deserialize, Serialize};
+use std::time::{Duration, Instant};
 
 /// Opaque slot handle assigned by the layout daemon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -32,12 +33,40 @@ pub struct CylinderState {
     pub slots: Vec<PanelSlot>,
     #[serde(skip)]
     next_id: u64,
+    /// Active slide hysteresis (daemon-only).
+    #[serde(skip)]
+    slide_drag: Option<SlideDrag>,
 }
 
 /// Arc spacing between neighbouring panels (metres of arc).
 pub const PANEL_SPACING_M: f32 = 0.02;
 pub const MIN_RADIUS_M: f32 = 0.2;
 pub const MAX_RADIUS_M: f32 = 5.0;
+/// Must cross a neighbour's centre by this much (radians) before the slot index moves.
+pub const SLIDE_HYSTERESIS_RAD: f32 = 0.05;
+/// Pending insert index must dwell this long before we commit (stops react-dnd flip-flop).
+pub const SLIDE_DWELL_MS: u64 = 120;
+
+/// In-progress palm/DnD slide: frozen neighbour anchors + committed insert index.
+#[derive(Debug, Clone)]
+struct SlideDrag {
+    id: SlotId,
+    /// Other panels' packed yaw at drag start, sorted ascending.
+    anchors: Vec<(SlotId, f32)>,
+    committed: usize,
+    pending: Option<usize>,
+    pending_since: Instant,
+}
+
+impl PartialEq for SlideDrag {
+    fn eq(&self, other: &Self) -> bool {
+        // pending_since is wall-clock; ignore for snapshot equality.
+        self.id == other.id
+            && self.anchors == other.anchors
+            && self.committed == other.committed
+            && self.pending == other.pending
+    }
+}
 
 impl Default for CylinderState {
     fn default() -> Self {
@@ -49,6 +78,7 @@ impl Default for CylinderState {
             anchor: CylinderAnchor::HmdAtGrab,
             slots: Vec::new(),
             next_id: 1,
+            slide_drag: None,
         }
     }
 }
@@ -105,6 +135,9 @@ impl CylinderState {
     }
 
     pub fn release_slot(&mut self, id: SlotId) {
+        if self.slide_drag.as_ref().is_some_and(|s| s.id == id) {
+            self.slide_drag = None;
+        }
         self.slots.retain(|s| s.id != id);
         self.relayout();
     }
@@ -183,40 +216,117 @@ impl CylinderState {
         self.reorder_slot(id, dest)
     }
 
-    /// Place `id` while dragging: reorder by target yaw and re-pack so neighbours
-    /// slide open a landing seat. The floating panel **stays in that packed seat**
-    /// (one visible copy). A hand-space ghost (client-side) shows the drag; leaving
-    /// the floater at the drag yaw on top of neighbours caused the stripey double.
+    /// Place `id` while dragging: reorder into a landing seat with hysteresis.
+    ///
+    /// Neighbour yaws are **frozen at drag start** (packed layout excluding the
+    /// dragged panel). Target insert index only moves after the drag yaw crosses a
+    /// neighbour's centre ± [`SLIDE_HYSTERESIS_RAD`], and only after
+    /// [`SLIDE_DWELL_MS`] of stable desire — stops the react-dnd flip-flop against
+    /// the live slid layout.
     pub fn slide_slot(&mut self, id: SlotId, yaw_rad: f32) -> Option<PanelSlot> {
         if !yaw_rad.is_finite() {
             return self.slot(id).cloned();
         }
-        let from = self.slot_index(id)?;
-        // Use target yaw only to choose insertion index among *other* slots.
-        let dest = self
-            .slots
-            .iter()
-            .filter(|s| s.id != id && s.yaw_rad < yaw_rad)
-            .count();
-        if from != dest {
-            let slot = self.slots.remove(from);
-            let insert_at = dest.min(self.slots.len());
-            self.slots.insert(insert_at, slot);
+        let _ = self.slot_index(id)?;
+        let now = Instant::now();
+
+        let started = if self.slide_drag.as_ref().is_none_or(|s| s.id != id) {
+            // Freeze packed neighbour yaws excluding the draggee (no live-slid feedback).
+            let mut anchors: Vec<(SlotId, f32)> = self
+                .slots
+                .iter()
+                .filter(|s| s.id != id)
+                .map(|s| (s.id, s.yaw_rad))
+                .collect();
+            anchors.sort_by(|a, b| a.1.total_cmp(&b.1));
+            let committed = anchors.iter().filter(|(_, y)| *y < yaw_rad).count();
+            self.slide_drag = Some(SlideDrag {
+                id,
+                anchors,
+                committed,
+                pending: None,
+                pending_since: now,
+            });
+            true
+        } else {
+            false
+        };
+
+        let desired = {
+            let drag = self.slide_drag.as_ref().unwrap();
+            if started {
+                // First sample: seat immediately at the frozen-anchor insert index.
+                drag.committed
+            } else {
+                slide_desired_index(
+                    &drag.anchors,
+                    yaw_rad,
+                    drag.committed,
+                    SLIDE_HYSTERESIS_RAD,
+                )
+            }
+        };
+
+        let commit = {
+            let drag = self.slide_drag.as_mut().unwrap();
+            if started {
+                true
+            } else if desired == drag.committed {
+                drag.pending = None;
+                false
+            } else if drag.pending != Some(desired) {
+                drag.pending = Some(desired);
+                drag.pending_since = now;
+                false
+            } else if now.duration_since(drag.pending_since)
+                >= Duration::from_millis(SLIDE_DWELL_MS)
+            {
+                drag.committed = desired;
+                drag.pending = None;
+                true
+            } else {
+                false
+            }
+        };
+
+        if commit {
+            self.apply_slide_committed(id);
         }
-        self.relayout();
         self.slot(id).cloned()
     }
 
-    /// After a slide: reorder so `id` sits among neighbours by current yaw, then re-pack.
+    fn apply_slide_committed(&mut self, id: SlotId) {
+        let Some(drag) = self.slide_drag.as_ref() else {
+            return;
+        };
+        let dest = drag.committed;
+        let mut new_order: Vec<SlotId> = drag.anchors.iter().map(|(sid, _)| *sid).collect();
+        let insert_at = dest.min(new_order.len());
+        new_order.insert(insert_at, id);
+        let mut by_id: std::collections::HashMap<SlotId, PanelSlot> =
+            self.slots.drain(..).map(|s| (s.id, s)).collect();
+        self.slots = new_order
+            .into_iter()
+            .filter_map(|sid| by_id.remove(&sid))
+            .collect();
+        self.slots.extend(by_id.into_values());
+        self.relayout();
+    }
+
+    /// After a slide: commit immediately to yaw order (no dwell), clear drag state.
     pub fn settle_slot_by_yaw(&mut self, id: SlotId) -> bool {
         let Some(yaw) = self.slot(id).map(|s| s.yaw_rad) else {
             return false;
         };
-        let idx = self
+        self.slide_drag = None;
+        let mut others: Vec<(SlotId, f32)> = self
             .slots
             .iter()
-            .filter(|s| s.id != id && s.yaw_rad < yaw)
-            .count();
+            .filter(|s| s.id != id)
+            .map(|s| (s.id, s.yaw_rad))
+            .collect();
+        others.sort_by(|a, b| a.1.total_cmp(&b.1));
+        let idx = others.iter().filter(|(_, y)| *y < yaw).count();
         self.reorder_slot(id, idx)
     }
 
@@ -293,6 +403,28 @@ impl CylinderState {
             s.yaw_rad = if i % 2 == 0 { centre / r } else { -centre / r };
         }
     }
+}
+
+
+/// Insert index among sorted `anchors` with hysteresis around the committed index.
+///
+/// Moving right (higher index / +yaw) requires `yaw > anchors[committed].yaw + margin`.
+/// Moving left requires `yaw < anchors[committed - 1].yaw - margin`.
+pub fn slide_desired_index(
+    anchors: &[(SlotId, f32)],
+    yaw: f32,
+    committed: usize,
+    margin: f32,
+) -> usize {
+    let n = anchors.len();
+    let mut dest = committed.min(n);
+    while dest < n && yaw > anchors[dest].1 + margin {
+        dest += 1;
+    }
+    while dest > 0 && yaw < anchors[dest - 1].1 - margin {
+        dest -= 1;
+    }
+    dest
 }
 
 /// Angular half-width of a slot on radius `r`.
@@ -523,6 +655,87 @@ mod tests {
         assert!((ya - yb).abs() > 0.05, "packed yaw should differ");
         // Still exactly two slots, unique ids
         assert_eq!(c.slots.len(), 2);
+    }
+
+
+    #[test]
+    fn slide_desired_index_hysteresis_around_neighbour_centre() {
+        let anchors = vec![(SlotId(1), -0.4_f32), (SlotId(2), 0.0), (SlotId(3), 0.4)];
+        let m = SLIDE_HYSTERESIS_RAD;
+        // Sitting between 0 and 1 (index 1 among 3 anchors → insert before anchors[1])
+        assert_eq!(slide_desired_index(&anchors, -0.2, 1, m), 1);
+        // Must cross anchors[1] centre + margin to move right
+        assert_eq!(slide_desired_index(&anchors, 0.0 + m * 0.5, 1, m), 1);
+        assert_eq!(slide_desired_index(&anchors, 0.0 + m + 0.001, 1, m), 2);
+        // Must cross anchors[0] centre - margin to move left
+        assert_eq!(slide_desired_index(&anchors, -0.4 - m * 0.5, 1, m), 1);
+        assert_eq!(slide_desired_index(&anchors, -0.4 - m - 0.001, 1, m), 0);
+    }
+
+    #[test]
+    fn slide_slow_sweep_is_monotonic_no_flipflop() {
+        // Two equal panels (even→right, odd→left). Drag the right panel slowly
+        // left across the neighbour centre; committed must only decrease.
+        // Jitter inside the dead-band must not flip-flop.
+        let mut c = CylinderState::default();
+        let a = c.assign_slot(&m(1000, 500)); // right (+)
+        let b = c.assign_slot(&m(1000, 500)); // left (-)
+        assert!(c.slot(a.id).unwrap().yaw_rad > 0.0);
+        assert!(c.slot(b.id).unwrap().yaw_rad < 0.0);
+
+        let y_b = c.slot(b.id).unwrap().yaw_rad;
+        let margin = SLIDE_HYSTERESIS_RAD;
+
+        // Start well to the right of b → insert index 1 among {b}.
+        c.slide_slot(a.id, y_b + 1.0).unwrap();
+        assert_eq!(c.slide_drag.as_ref().unwrap().committed, 1);
+        assert_eq!(c.slide_drag.as_ref().unwrap().anchors.len(), 1);
+        let mut last = 1usize;
+        let mut history = vec![last];
+
+        // Strictly leftward samples: stay right of b, then cross centre − margin.
+        let samples = [
+            y_b + margin + 0.05, // still 1
+            y_b + margin * 0.5,  // still 1 (inside dead-band)
+            y_b - margin - 0.02, // cross → 0
+            y_b - margin - 0.15, // stay 0
+            y_b - 0.5,           // stay 0
+        ];
+        for yaw in samples {
+            for _ in 0..5 {
+                c.slide_slot(a.id, yaw).unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(30));
+            }
+            let cur = c.slide_drag.as_ref().unwrap().committed;
+            history.push(cur);
+            assert!(
+                cur <= last,
+                "committed must be monotonic while sweeping left: hist={history:?} yaw={yaw}"
+            );
+            last = cur;
+        }
+        assert_eq!(history.last().copied(), Some(0), "must finish left of neighbour: {history:?}");
+        assert!(
+            history.windows(2).all(|w| w[1] <= w[0]),
+            "no increase while sweeping left: {history:?}"
+        );
+        // Must have actually moved (not stuck at 1).
+        assert!(history.iter().any(|&h| h == 0) && history.iter().any(|&h| h == 1));
+
+        // Jitter around b's centre inside the dead-band: must not flip back to 1.
+        let before = c.slide_drag.as_ref().unwrap().committed;
+        assert_eq!(before, 0);
+        for i in 0..24 {
+            let yaw = if i % 2 == 0 {
+                y_b + margin * 0.4
+            } else {
+                y_b - margin * 0.4
+            };
+            c.slide_slot(a.id, yaw).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let after = c.slide_drag.as_ref().unwrap().committed;
+        assert_eq!(before, after, "jitter inside dead-band must not flip committed slot");
     }
 
     #[test]
