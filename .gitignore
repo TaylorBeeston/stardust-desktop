@@ -8,3 +8,6 @@ state/host-mirror/
 .env
 .env.*
 *.log
+
+.verify-evidence/
+
