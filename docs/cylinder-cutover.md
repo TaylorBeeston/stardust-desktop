@@ -28,3 +28,12 @@ Restores Flatland panel shell + prior startup/mirrors scripts and restarts
 ## Manifold
 
 Still disabled in startup.sh (Taylor request). Do not relaunch without OK.
+
+## Panel size + order (post-cutover fix)
+
+- Hello metrics for host-mirror match Flatland WayVR sizes via `stardust_cylinder_shell`:
+  - eDP-1: 2560×1600 @ density **2300** → **1.113 m**
+  - Meta-0: 3440×1440 @ density **2070** → **1.662 m**
+- Packing alternates RIGHT, LEFT by registration order. Autostart launches
+  `STARDUST_MIRROR_OUTPUTS=Meta-0 eDP-1` so Meta is RIGHT and eDP is LEFT.
+- Radius remains **0.45**.

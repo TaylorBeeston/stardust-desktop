@@ -50,7 +50,9 @@ sleep "${STARDUST_MIRRORS_SETTLE:-2}"
 export STARDUST_WAYLAND_DISPLAY="$sock"
 export CYLINDER_LAYOUT_SOCK="$LAYOUT_SOCK"
 # Explicit labels = live portal tokens (no dialog). Do NOT use cyl-* side labels here.
-export STARDUST_MIRROR_OUTPUTS="${STARDUST_MIRROR_OUTPUTS:-eDP-1 Meta-0}"
+# Packing alternates RIGHT, LEFT, ... by registration order. Flatland had eDP-1 LEFT /
+# Meta-0 RIGHT, so register Meta-0 first then eDP-1.
+export STARDUST_MIRROR_OUTPUTS="${STARDUST_MIRROR_OUTPUTS:-Meta-0 eDP-1}"
 # Avoid dual-mirror autodetection picking a stale/side socket
 "$HOME/.local/bin/stardust-dual-mirror-flat"
 

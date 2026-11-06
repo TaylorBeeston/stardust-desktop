@@ -17,7 +17,26 @@ SHELL_BIN="${CYLINDER_SHELL_BIN:-$PREFIX/bin/cylinder-shell}"
   echo "SDXR_WL_APP_ID=${SDXR_WL_APP_ID-} title=${SDXR_WL_TITLE-}"
   echo "shell=$SHELL_BIN"
 } >>"$LOG" 2>&1
-# Optional per-panel metrics (no app_id branching — product path).
-# Hosts can export CYLINDER_WIDTH_PX / CYLINDER_HEIGHT_PX / CYLINDER_DENSITY.
+# Per-panel Hello metrics. Layout width_m = size_px / density; surface resize does NOT
+# currently re-Hello, so host-mirror must match Flatland's WayVR sizes up front:
+#   eDP-1  2560px @ 2300 → 1.113 m   Meta-0  3440px @ 2070 → 1.662 m
+# Explicit CYLINDER_* env wins (tests / one-offs).
+if [ -z "${CYLINDER_DENSITY-}" ]; then
+  case "${SDXR_WL_APP_ID-} ${SDXR_WL_TITLE-}" in
+    *host-mirror-edp-1*|*"Host Mirror eDP-1"*)
+      export CYLINDER_WIDTH_PX="${CYLINDER_WIDTH_PX:-2560}"
+      export CYLINDER_HEIGHT_PX="${CYLINDER_HEIGHT_PX:-1600}"
+      export CYLINDER_DENSITY=2300
+      ;;
+    *host-mirror-meta-0*|*"Host Mirror Meta-0"*)
+      export CYLINDER_WIDTH_PX="${CYLINDER_WIDTH_PX:-3440}"
+      export CYLINDER_HEIGHT_PX="${CYLINDER_HEIGHT_PX:-1440}"
+      export CYLINDER_DENSITY=2070
+      ;;
+  esac
+fi
+{
+  echo "CYLINDER_DENSITY=${CYLINDER_DENSITY-<default 3000>} size=${CYLINDER_WIDTH_PX-?}x${CYLINDER_HEIGHT_PX-?}"
+} >>"$LOG" 2>&1
 export RUST_LOG="${RUST_LOG:-cylinder_shell=info,warn}"
 exec "$SHELL_BIN" "$@" >>"$LOG" 2>&1

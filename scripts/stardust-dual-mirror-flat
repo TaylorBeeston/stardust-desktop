@@ -15,7 +15,7 @@
 # Usage: stardust-dual-mirror-flat [--dry-run] [--only LABEL] [--recenter]
 #        --recenter: just re-place the running panels on your current gaze (= stardust-dual-mirror-recenter)
 # Placement: both panels share one head pose, sampled once the HMD is still (see stardust-dual-mirror-recenter).
-# Env:   STARDUST_MIRROR_OUTPUTS  space-separated labels, one mirror each (default "eDP-1 Meta-0";
+# Env:   STARDUST_MIRROR_OUTPUTS  space-separated labels, one mirror each (default "Meta-0 eDP-1" so Meta RIGHT / eDP LEFT;
 #        labels are just names: you pick the monitor in the portal dialog)
 #        HOST_MIRROR_BIN  host-mirror binary (default: host-mirror-dmabuf, else host-mirror, on PATH)
 #        STARDUST_WAYLAND_DISPLAY (default: socket of the running stardust-xr-wayland-service)
@@ -26,7 +26,7 @@ set -euo pipefail
 RUN="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 _def="$(command -v host-mirror-dmabuf || command -v host-mirror || echo host-mirror)"
 BIN="${HOST_MIRROR_BIN:-$_def}"
-OUTPUTS="${STARDUST_MIRROR_OUTPUTS:-eDP-1 Meta-0}"
+OUTPUTS="${STARDUST_MIRROR_OUTPUTS:-Meta-0 eDP-1}"
 DRY=0; ONLY=""
 while [ $# -gt 0 ]; do
   case "$1" in
