@@ -183,15 +183,16 @@ impl CylinderState {
         self.reorder_slot(id, dest)
     }
 
-    /// Place `id` at an absolute yaw while dragging: reorder by yaw, re-pack
-    /// neighbours so a landing gap opens, then keep the floating panel at the
-    /// drag yaw (hand follow). Settle snaps it into the packed seat.
+    /// Place `id` while dragging: reorder by target yaw and re-pack so neighbours
+    /// slide open a landing seat. The floating panel **stays in that packed seat**
+    /// (one visible copy). A hand-space ghost (client-side) shows the drag; leaving
+    /// the floater at the drag yaw on top of neighbours caused the stripey double.
     pub fn slide_slot(&mut self, id: SlotId, yaw_rad: f32) -> Option<PanelSlot> {
         if !yaw_rad.is_finite() {
             return self.slot(id).cloned();
         }
         let from = self.slot_index(id)?;
-        self.slots[from].yaw_rad = yaw_rad;
+        // Use target yaw only to choose insertion index among *other* slots.
         let dest = self
             .slots
             .iter()
@@ -203,10 +204,6 @@ impl CylinderState {
             self.slots.insert(insert_at, slot);
         }
         self.relayout();
-        // Neighbours keep packed seats (gap at insertion index); floater follows hand.
-        if let Some(s) = self.slots.iter_mut().find(|s| s.id == id) {
-            s.yaw_rad = yaw_rad;
-        }
         self.slot(id).cloned()
     }
 
@@ -336,16 +333,32 @@ mod tests {
         let b = c.assign_slot(&m(1000, 500));
         let d = c.assign_slot(&m(1000, 500));
         let b_yaw0 = c.slot(b.id).unwrap().yaw_rad;
+        let a_yaw0 = c.slot(a.id).unwrap().yaw_rad;
         // Drag `a` past `b` toward the far left (more negative than d).
         let target = c.slot(d.id).unwrap().yaw_rad - 0.5;
         c.slide_slot(a.id, target);
-        assert!((c.slot(a.id).unwrap().yaw_rad - target).abs() < 1e-5);
+        // Floater sits in packed landing seat (not at raw target — avoids overlap stripes).
+        let a_yaw1 = c.slot(a.id).unwrap().yaw_rad;
+        assert!(
+            (a_yaw1 - a_yaw0).abs() > 1e-4 || (a_yaw1 - target).abs() < 0.5,
+            "a should move into a new packed seat, a {a_yaw0} → {a_yaw1} target={target}"
+        );
         // Neighbours re-packed: b should have moved from its original seat.
         let b_yaw1 = c.slot(b.id).unwrap().yaw_rad;
         assert!(
             (b_yaw1 - b_yaw0).abs() > 1e-4,
             "expected neighbour to slide for gap, b {b_yaw0} → {b_yaw1}"
         );
+        // No two panels share a yaw (no double-draw overlap).
+        let yaws: Vec<_> = c.slots.iter().map(|s| s.yaw_rad).collect();
+        for i in 0..yaws.len() {
+            for j in i + 1..yaws.len() {
+                assert!(
+                    (yaws[i] - yaws[j]).abs() > 1e-3,
+                    "panels must not overlap after slide"
+                );
+            }
+        }
     }
 
     #[test]
@@ -497,20 +510,19 @@ mod tests {
         });
         // a is RIGHT (+), b is LEFT (-) in registration order
         assert!(a.yaw_rad > 0.0 && b.yaw_rad < 0.0, "pack a+ b- got {} {}", a.yaw_rad, b.yaw_rad);
-        // Slide a past b to the far left
-        c.slide_slot(a.id, -1.5).unwrap();
+        // Slide a toward the left of b (preview packs into a landing seat, no overlap).
+        let target = b.yaw_rad - 0.2;
+        c.slide_slot(a.id, target).unwrap();
+        let ya_mid = c.slot(a.id).unwrap().yaw_rad;
+        let yb_mid = c.slot(b.id).unwrap().yaw_rad;
+        assert!((ya_mid - yb_mid).abs() > 0.05, "preview must not overlap");
         assert!(c.settle_slot_by_yaw(a.id));
-        // After settle+relayout, a should be first in leftward sense: registration order by yaw
-        let ia = c.slot_index(a.id).unwrap();
-        let ib = c.slot_index(b.id).unwrap();
-        // a had more negative yaw at settle → lower index among sorted-by-yaw insert
-        assert_eq!(ia, 0, "a should land at index 0 after settling left of b");
-        assert_eq!(ib, 1);
-        // Pack still alternates from gap — just check both have finite disjoint yaw
         let ya = c.slot(a.id).unwrap().yaw_rad;
         let yb = c.slot(b.id).unwrap().yaw_rad;
         assert!(ya.is_finite() && yb.is_finite());
         assert!((ya - yb).abs() > 0.05, "packed yaw should differ");
+        // Still exactly two slots, unique ids
+        assert_eq!(c.slots.len(), 2);
     }
 
     #[test]

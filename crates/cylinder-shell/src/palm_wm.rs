@@ -31,6 +31,8 @@ pub struct ReachConfig {
     pub origin_distal_m: f32,
     pub aim_smooth: f32,
     pub curl_freeze_m: f32,
+    /// How long aim stays frozen after fist grab (ms). Then live aim resumes.
+    pub curl_freeze_ms: u64,
 }
 
 impl Default for ReachConfig {
@@ -50,6 +52,7 @@ impl Default for ReachConfig {
             aim_smooth: 0.28,
             // Freeze aim once mean tip distance drops below this while armed.
             curl_freeze_m: 0.095,
+            curl_freeze_ms: 200,
         }
     }
 }
@@ -82,6 +85,7 @@ impl ReachConfig {
         f("CYLINDER_PALM_ORIGIN_DISTAL_M", &mut c.origin_distal_m);
         f("CYLINDER_PALM_AIM_SMOOTH", &mut c.aim_smooth);
         f("CYLINDER_PALM_CURL_FREEZE_M", &mut c.curl_freeze_m);
+        u("CYLINDER_PALM_CURL_FREEZE_MS", &mut c.curl_freeze_ms);
         c
     }
 }
@@ -261,8 +265,10 @@ pub struct ReachArming {
     pub grabbing: bool,
     pub locked_dir: Option<[f32; 3]>,
     pub locked_origin: Option<[f32; 3]>,
-    /// True once fingers start curling while armed — keeps pre-fist aim.
+    /// True while curl-transition freeze is active.
     pub aim_frozen: bool,
+    /// Wall time when curl freeze ends (grab aim unlocks after this).
+    freeze_until: Option<Instant>,
     gate_since: Option<Instant>,
     cfg: ReachConfig,
 }
@@ -276,6 +282,7 @@ impl ReachArming {
             locked_dir: None,
             locked_origin: None,
             aim_frozen: false,
+            freeze_until: None,
             gate_since: None,
             cfg,
         }
@@ -307,6 +314,7 @@ impl ReachArming {
             self.locked_dir = None;
             self.locked_origin = None;
             self.aim_frozen = false;
+            self.freeze_until = None;
             self.gate_since = None;
             self.shape = PalmShape::Open;
             return;
@@ -318,11 +326,26 @@ impl ReachArming {
                 self.locked_dir = None;
                 self.locked_origin = None;
                 self.aim_frozen = false;
+                self.freeze_until = None;
                 self.armed = false;
                 self.gate_since = None;
             } else {
-                // Fist: keep pre-curl direction; follow palm translation only.
-                self.locked_origin = Some(live_origin);
+                // Curl freeze only for a short window; then track live aim so
+                // body/head yaw around the cylinder moves the panel.
+                let frozen = self
+                    .freeze_until
+                    .is_some_and(|until| now < until);
+                self.aim_frozen = frozen;
+                if frozen {
+                    self.locked_origin = Some(live_origin);
+                } else {
+                    let sm = match self.locked_dir {
+                        Some(prev) => lerp_dir(prev, live_dir, self.cfg.aim_smooth),
+                        None => live_dir,
+                    };
+                    self.locked_dir = Some(sm);
+                    self.locked_origin = Some(live_origin);
+                }
             }
             return;
         }
@@ -332,6 +355,8 @@ impl ReachArming {
             self.grabbing = true;
             self.armed = true;
             self.aim_frozen = true;
+            self.freeze_until =
+                Some(now + Duration::from_millis(self.cfg.curl_freeze_ms.max(1)));
             self.locked_dir = Some(self.locked_dir.unwrap_or(live_dir));
             self.locked_origin = Some(live_origin);
             return;
@@ -394,6 +419,54 @@ impl ReachArming {
     }
 }
 
+
+/// Mesh-local full-cylinder azimuth of a ray hit (radians, + = right / +X).
+///
+/// Frame: axis at `(0, y, +radius)`, panel centre at yaw 0. Unlike a panel UV
+/// hit, this still returns a yaw when the ray misses the grabbed panel's arc —
+/// so rotating the body left/right can drive slide without visiting the
+/// cylinder backside.
+pub fn mesh_cylinder_phi_from_ray(
+    origin: [f32; 3],
+    dir: [f32; 3],
+    radius_m: f32,
+) -> Option<f32> {
+    let r = radius_m.max(0.05);
+    let o = Vec3::from(origin);
+    let d = Vec3::from(dir).normalize_or_zero();
+    if d.length_squared() < 1e-12 {
+        return None;
+    }
+    // Cylinder x² + (z − r)² = r² (axis through (0, *, r)).
+    let ox = o.x;
+    let oz = o.z - r;
+    let dx = d.x;
+    let dz = d.z;
+    let a = dx * dx + dz * dz;
+    if a < 1e-12 {
+        return None;
+    }
+    let b = 2.0 * (ox * dx + oz * dz);
+    let c = ox * ox + oz * oz - r * r;
+    let disc = b * b - 4.0 * a * c;
+    if disc < 0.0 {
+        return None;
+    }
+    let sq = disc.sqrt();
+    let mut ts = [(-b - sq) / (2.0 * a), (-b + sq) / (2.0 * a)];
+    ts.sort_by(|x, y| x.partial_cmp(y).unwrap());
+    for t_hit in ts {
+        if t_hit <= 0.0 || t_hit > REACH_MAX_M {
+            continue;
+        }
+        let hit = o + d * t_hit;
+        // Same convention as `CylinderSliceHitTest::mesh_local_point_to_uv`.
+        return Some(hit.x.atan2(r - hit.z));
+    }
+    None
+}
+
+#[allow(dead_code)]
 pub fn slide_yaw_from_uv_delta(
     yaw0: f32,
     u0: f32,
@@ -437,7 +510,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[test]
     fn reach_origin_still_offsets_along_distal() {
         let a = hand_axes_from_quat([1.0, 2.0, 3.0], [0.0, 0.0, 0.0, 1.0], true);
         let cfg = ReachConfig { origin_distal_m: 0.1, ..ReachConfig::default() };
@@ -446,7 +518,8 @@ mod tests {
         assert!((o - Vec3::new(1.0, 2.0, 2.9)).length() < 1e-4);
     }
 
-        fn measured_openxr_palm_face_is_neg_y() {
+    #[test]
+    fn measured_openxr_palm_face_is_neg_y() {
         let a = hand_axes_from_quat([0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0], true);
         assert!((Vec3::from(a.palm_normal) + Vec3::Y).length() < 1e-5);
         assert!((Vec3::from(a.palm_back) - Vec3::Y).length() < 1e-5);
@@ -504,6 +577,24 @@ mod tests {
         let a = hand_axes_from_quat([0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0], true);
         let d = Vec3::from(reach_direction(&a, &ReachConfig::default()));
         assert!(d.dot(-Vec3::Y) > 0.7);
+    }
+
+    #[test]
+    fn mesh_cylinder_phi_tracks_body_yaw() {
+        let r = 0.7_f32;
+        // Palm near viewer (+Z), ray toward panel centre (−ish Z in mesh → toward z=0).
+        let origin = [0.0, 0.0, 0.35];
+        let dir = [0.0, 0.0, -1.0];
+        let phi0 = mesh_cylinder_phi_from_ray(origin, dir, r).unwrap();
+        assert!(phi0.abs() < 0.05, "centre aim phi={phi0}");
+        // Aim right (+X).
+        let dir_r = [0.4, 0.0, -1.0];
+        let phi_r = mesh_cylinder_phi_from_ray(origin, dir_r, r).unwrap();
+        assert!(phi_r > 0.1, "right aim should be +phi, got {phi_r}");
+        // Aim left.
+        let dir_l = [-0.4, 0.0, -1.0];
+        let phi_l = mesh_cylinder_phi_from_ray(origin, dir_l, r).unwrap();
+        assert!(phi_l < -0.1, "left aim should be -phi, got {phi_l}");
     }
 
     #[test]

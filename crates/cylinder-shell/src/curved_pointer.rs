@@ -263,7 +263,7 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
             use std::sync::atomic::{AtomicU32, Ordering};
             static N: AtomicU32 = AtomicU32::new(0);
             let q = &input;
-            if !q.is_empty() && N.fetch_add(1, Ordering::Relaxed) % 90 == 0 {
+            if !q.is_empty() && N.fetch_add(1, Ordering::Relaxed) % 600 == 0 {
                 let hits = q.values().filter(|s| snapshot_hit(&h, s.input()).is_some()).count();
                 tracing::info!(
                     inputs = q.len(),
@@ -340,19 +340,32 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
             }
         }
         if inner.reach.grabbing && !was_grabbing {
-            if let Some(hit) = palm_hit {
-                inner.palm_grab_u0 = Some(hit.uv.0);
-                inner.palm_grab_yaw0 = None;
-                (self.on_palm_highlight.0)(state, true);
-                inner.palm_highlight = true;
-                (self.on_palm_slide.0)(state, 0.0);
-                tracing::info!(u = hit.uv.0, "palm fist grab panel");
-            }
+            // Capture grab-time cylinder phi (usually ~0 when aimed at this panel).
+            let phi0 = inner
+                .reach
+                .aim()
+                .and_then(|(o, d)| palm_wm::mesh_cylinder_phi_from_ray(o, d, h.radius_m))
+                .unwrap_or(0.0);
+            inner.palm_grab_u0 = Some(phi0); // repurposed: store phi0
+            inner.palm_grab_yaw0 = None;
+            (self.on_palm_highlight.0)(state, true);
+            inner.palm_highlight = true;
+            (self.on_palm_slide.0)(state, 0.0);
+            tracing::info!(phi0, "palm fist grab panel");
         } else if inner.reach.grabbing {
-            if let Some(hit) = palm_hit {
-                let u0 = inner.palm_grab_u0.unwrap_or(0.5);
-                let dyaw = palm_wm::slide_yaw_from_uv_delta(0.0, u0, hit.uv.0, h.width_m, h.radius_m);
-                (self.on_palm_slide.0)(state, dyaw);
+            // Absolute cylinder yaw offset from grab — works when ray leaves this panel's UV.
+            if let Some((o, d)) = inner.reach.aim() {
+                if let Some(phi) = palm_wm::mesh_cylinder_phi_from_ray(o, d, h.radius_m) {
+                    let phi0 = inner.palm_grab_u0.unwrap_or(0.0);
+                    // Aim right (+phi) → panel yaw increases so centre tracks the ray.
+                    let dyaw = phi - phi0;
+                    // Quantize ~0.5° to avoid per-frame relayout spam (stripe flicker + CPU).
+                    let q = (dyaw * 120.0).round() / 120.0;
+                    if inner.palm_grab_yaw0.map(|p| (p - q).abs() > 1e-5).unwrap_or(true) {
+                        inner.palm_grab_yaw0 = Some(q);
+                        (self.on_palm_slide.0)(state, q);
+                    }
+                }
             }
         } else if was_grabbing {
             inner.palm_grab_u0 = None;
@@ -399,7 +412,9 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
             if let Some(hit) = palm_hit {
                 viz.push(hover_cursor_ring(&h, hit, inner.reach.grabbing));
             }
-            // Drag preview: ghost panel at the hand + slot outline where it will land.
+            // Drag preview: ghost at the hand only. Landing seat is the real panel
+            // after neighbours pack open a gap (see slide_slot) — do NOT redraw a
+            // second full-size border on the mesh (that caused the stripey double).
             if inner.reach.grabbing {
                 if let Some(o) = viz_origin {
                     let dir = inner
@@ -407,10 +422,7 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
                         .aim()
                         .map(|(_, d)| Vec3::from(d))
                         .unwrap_or(Vec3::NEG_Z);
-                    viz.push(ghost_panel_at_hand(o, dir, h.width_m * 0.35, h.height_m * 0.35));
-                }
-                if let Some(hit) = palm_hit {
-                    viz.push(slot_outline_at_hit(&h, hit));
+                    viz.push(ghost_panel_at_hand(o, dir, h.width_m * 0.28, h.height_m * 0.28));
                 }
             }
         } else if let Some((snap, hit)) = best {
@@ -454,7 +466,8 @@ fn quant_mm(v: f32) -> i32 {
 /// Ghost rectangle floating at the hand while fist-dragging a panel.
 fn ghost_panel_at_hand(palm: Vec3, dir: Vec3, width_m: f32, height_m: f32) -> Line {
     let forward = dir.normalize_or_zero();
-    let centre = palm + forward * 0.06;
+    // Pull ghost toward the user so it never z-fights the real panel on the belt.
+    let centre = palm + forward * 0.10 - Vec3::Z * 0.02;
     let up = if forward.cross(Vec3::Y).length_squared() > 1e-6 {
         forward.cross(Vec3::Y).cross(forward).normalize_or_zero()
     } else {
@@ -471,17 +484,10 @@ fn ghost_panel_at_hand(palm: Vec3, dir: Vec3, width_m: f32, height_m: f32) -> Li
     ];
     let mut line = lines::line_from_points(corners.into_iter().map(|c| c.to_array()).collect());
     line.cyclic = true;
-    line.thickness(0.0025)
-        .color(rgba_linear!(0.25, 0.95, 0.55, 0.85))
+    line.thickness(0.0035)
+        .color(rgba_linear!(1.0, 0.45, 0.95, 0.7))
 }
 
-/// Landing-slot outline on the cylinder at the current ray hit.
-fn slot_outline_at_hit(h: &CylinderSliceHitTest, hit: SliceHit) -> Line {
-    let _ = hit; // this panel's mesh is already the landing slot
-    crate::outline::curved_panel_border_segs(h.width_m, h.height_m, h.radius_m, 16)
-        .thickness(0.004)
-        .color(rgba_linear!(1.0, 0.85, 0.25, 0.9))
-}
 
 /// Flatland `pointer_input::line_from_input` / `line_from_point`, but the surface
 /// endpoint is the **curved** hit (not a flat z=0 clamp).
