@@ -183,6 +183,29 @@ impl CylinderState {
         self.reorder_slot(id, dest)
     }
 
+    /// Temporarily place `id` at an absolute yaw (radians, relative to group).
+    /// Does not re-pack neighbours — used while open-palm dragging.
+    pub fn slide_slot(&mut self, id: SlotId, yaw_rad: f32) -> Option<PanelSlot> {
+        let s = self.slots.iter_mut().find(|s| s.id == id)?;
+        if yaw_rad.is_finite() {
+            s.yaw_rad = yaw_rad;
+        }
+        Some(s.clone())
+    }
+
+    /// After a slide: reorder so `id` sits among neighbours by current yaw, then re-pack.
+    pub fn settle_slot_by_yaw(&mut self, id: SlotId) -> bool {
+        let Some(yaw) = self.slot(id).map(|s| s.yaw_rad) else {
+            return false;
+        };
+        let idx = self
+            .slots
+            .iter()
+            .filter(|s| s.id != id && s.yaw_rad < yaw)
+            .count();
+        self.reorder_slot(id, idx)
+    }
+
     /// Adjacent panel in registration order.
     pub fn neighbour(&self, id: SlotId, toward_higher_index: bool) -> Option<SlotId> {
         let i = self.slot_index(id)?;
@@ -418,5 +441,60 @@ mod tests {
         assert_eq!(c.neighbour(a.id, true), Some(b.id));
         assert_eq!(c.neighbour(b.id, false), Some(a.id));
         assert_eq!(c.neighbour(a.id, false), None);
+    }
+
+    #[test]
+    fn slide_then_settle_orders_by_yaw() {
+        let mut c = CylinderState::default();
+        let a = c.assign_slot(&PanelMetrics {
+            size_px: (1000, 500),
+            density_px_per_m: 2000.0,
+            app_id: Some("a".into()),
+            title: None,
+        });
+        let b = c.assign_slot(&PanelMetrics {
+            size_px: (1000, 500),
+            density_px_per_m: 2000.0,
+            app_id: Some("b".into()),
+            title: None,
+        });
+        // a is RIGHT (+), b is LEFT (-) in registration order
+        assert!(a.yaw_rad > 0.0 && b.yaw_rad < 0.0, "pack a+ b- got {} {}", a.yaw_rad, b.yaw_rad);
+        // Slide a past b to the far left
+        c.slide_slot(a.id, -1.5).unwrap();
+        assert!(c.settle_slot_by_yaw(a.id));
+        // After settle+relayout, a should be first in leftward sense: registration order by yaw
+        let ia = c.slot_index(a.id).unwrap();
+        let ib = c.slot_index(b.id).unwrap();
+        // a had more negative yaw at settle → lower index among sorted-by-yaw insert
+        assert_eq!(ia, 0, "a should land at index 0 after settling left of b");
+        assert_eq!(ib, 1);
+        // Pack still alternates from gap — just check both have finite disjoint yaw
+        let ya = c.slot(a.id).unwrap().yaw_rad;
+        let yb = c.slot(b.id).unwrap().yaw_rad;
+        assert!(ya.is_finite() && yb.is_finite());
+        assert!((ya - yb).abs() > 0.05, "packed yaw should differ");
+    }
+
+    #[test]
+    fn palm_openness_hysteresis_helpers() {
+        // Mirrors curved_pointer::palm_openness thresholds.
+        fn classify(openness: f32, was_fist: bool) -> &'static str {
+            const OPEN: f32 = 0.055;
+            const FIST: f32 = 0.032;
+            if was_fist {
+                if openness >= OPEN { "open" } else { "fist" }
+            } else if openness <= FIST {
+                "fist"
+            } else {
+                "open"
+            }
+        }
+        assert_eq!(classify(0.08, false), "open");
+        assert_eq!(classify(0.02, false), "fist");
+        // hysteresis: mid-band keeps prior
+        assert_eq!(classify(0.04, true), "fist");
+        assert_eq!(classify(0.04, false), "open");
+        assert_eq!(classify(0.06, true), "open");
     }
 }

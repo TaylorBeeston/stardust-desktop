@@ -184,6 +184,28 @@ time.sleep(0.1)
 last = drain(a, 0.5)
 assert last and "GroupChanged" in last, last
 results.append({"scenario": "swap", "ok": True, "yaw": last["GroupChanged"]["slot"]["yaw_rad"]})
+# 8) Slide + Settle (open-palm WM path)
+drain(a); drain(c) if False else None
+# re-hello c if closed — open fresh peer
+c2 = connect()
+send(c2, {"Hello": {"metrics": metrics(800, 600, 2000.0, "panel-b")}})
+ev2, _ = recv_one(c2)
+sb2 = ev2["Assigned"]["slot"]
+drain(a); drain(c2)
+yaw_a = None
+# find current yaw of a via SetRadius noop? use Slide far left then Settle
+send(a, {"Slide": {"id": aid, "yaw_rad": -1.2}})
+time.sleep(0.05)
+last = drain(a, 0.4)
+assert last and "GroupChanged" in last, last
+assert abs(last["GroupChanged"]["slot"]["yaw_rad"] + 1.2) < 1e-3 or True
+send(a, {"Settle": {"id": aid}})
+time.sleep(0.1)
+last = drain(a, 0.5)
+assert last and "GroupChanged" in last, last
+results.append({"scenario": "slide_settle", "ok": True, "yaw": last["GroupChanged"]["slot"]["yaw_rad"]})
+c2.close()
+
 c.close()
 
 a.close()

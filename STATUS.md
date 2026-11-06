@@ -49,3 +49,10 @@ Staged release binaries + helpers under `~/.local` with backup `~/.local/share/r
 
 `scripts/verify/headless-vr.sh` + `stardust-xr-server-verify` (in-engine screenshots).
 Sample frames in `docs/verify-screenshots/`. Live session untouched. See skill + `staging/stardust-server-verify/`.
+
+## Headset fixes 2026-11-06
+
+- Mirror launch: no-dup if already running; Flatland metrics via wrapper (eDP 2560@2300, Meta 3440@2070).
+- Toggle: clean in/out state machine (no foreground exec).
+- Open-palm WM replaces pinch-drag swap (Slide/Settle IPC); pinch stays click.
+- Staged under `~/.local` with `roadie-backups/headset-fixes-*`. **Needs stardust-session restart** for layout Slide/Settle + palm in workers.

@@ -8,6 +8,7 @@ pub mod field_shape;
 pub mod hit_test;
 pub mod layout_ipc;
 pub mod curved_pointer;
+mod palm_wm;
 pub mod mesh;
 pub mod mods;
 pub mod outline;

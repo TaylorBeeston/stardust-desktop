@@ -25,3 +25,11 @@ That is **monitor in/out**, not focused-window in/out.
 2. A small Wayland screencopy client aimed at a chosen toplevel (`wlr-screencopy` / ext-image-copy-capture), then the same `host-mirror`-style uinput path.
 
 Until then, treat focused-window teleport as **infeasible with current host-mirror** and use monitor toggles + hexagon desktop entries.
+
+## Toggle state machine (2026-11-06)
+
+`stardust-cylinder-toggle-mirror <label>`:
+
+- **in** — one `host-mirror --label` on the cylinder (background via dual-mirror; Ctrl-C of the keybind does not kill capture).
+- **out** — stop that process and wait until gone (ScreenCast released).
+- Launching from hexagon while already **in** is a no-op (no duplicate).

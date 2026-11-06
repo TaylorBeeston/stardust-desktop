@@ -111,6 +111,9 @@ pub struct CylinderShell {
     /// Group gap (metres of arc) — for bead placement parity with packing.
     #[serde(skip)]
     group_gap_m: f32,
+    /// Panel yaw at open-palm grab start (group-relative).
+    #[serde(skip)]
+    palm_grab_yaw0: Option<f32>,
 }
 
 /// Apply a relative mouse delta to the cursor, clamped to the surface. Pure — unit-tested.
@@ -151,6 +154,7 @@ impl Default for CylinderShell {
             cursor: None,
             group_yaw_rad: 0.0,
             group_gap_m: 0.055,
+            palm_grab_yaw0: None,
         }
     }
 }
@@ -374,11 +378,21 @@ impl CylinderShell {
                 .on_button(|state: &mut Self, button, pressed| {
                     state.forward_pointer_button("xr", button, pressed, None);
                 })
-                .on_pinch_drag(|state: &mut Self, arc_m| {
-                    // +u is right on the mesh; shift toward higher index when dragging right.
-                    let delta = if arc_m > 0.0 { 1 } else { -1 };
-                    tracing::info!(arc_m, delta, "pinch-drag panel shift");
-                    state.send_shift(delta);
+                .on_palm_highlight(|state: &mut Self, on| {
+                    if on { state.last_input_at = Some(std::time::Instant::now()); }
+                    tracing::debug!(on, "palm highlight");
+                })
+                .on_palm_slide(|state: &mut Self, dyaw| {
+                    let Some(slot) = &state.worker.slot else { return };
+                    let base = *state.palm_grab_yaw0.get_or_insert(slot.yaw_rad);
+                    let yaw = base + dyaw;
+                    tracing::debug!(yaw, dyaw, "palm slide");
+                    state.send_slide(yaw);
+                })
+                .on_palm_settle(|state: &mut Self| {
+                    state.palm_grab_yaw0 = None;
+                    tracing::info!("palm settle");
+                    state.send_settle();
                 })
                 .on_scroll(|state: &mut Self, delta| {
                     let Some(shell) = &state.shell else { return };
@@ -588,6 +602,20 @@ impl CylinderShell {
         let Some(slot) = &self.worker.slot else { return };
         if let Err(e) = tx.shift(slot.id, delta) {
             tracing::warn!(%e, "Shift send failed");
+        }
+    }
+    pub fn send_slide(&self, yaw_rad: f32) {
+        let Some(tx) = &self.layout_tx else { return };
+        let Some(slot) = &self.worker.slot else { return };
+        if let Err(e) = tx.slide(slot.id, yaw_rad) {
+            tracing::warn!(%e, "Slide send failed");
+        }
+    }
+    pub fn send_settle(&self) {
+        let Some(tx) = &self.layout_tx else { return };
+        let Some(slot) = &self.worker.slot else { return };
+        if let Err(e) = tx.settle(slot.id) {
+            tracing::warn!(%e, "Settle send failed");
         }
     }
 

@@ -37,6 +37,10 @@ pub enum LayoutRequest {
     Reorder { id: SlotId, index: usize },
     /// Move panel by delta in registration order (−1/+1 for neighbour swap-ish).
     Shift { id: SlotId, delta: i32 },
+    /// Open-palm drag: temporary absolute yaw (relative to group).
+    Slide { id: SlotId, yaw_rad: f32 },
+    /// End open-palm drag: reorder by current yaw, then re-pack.
+    Settle { id: SlotId },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -253,6 +257,16 @@ fn handle_worker(stream: UnixStream, shared: Arc<Mutex<Shared>>) -> io::Result<(
                         sh.broadcast(None);
                     }
                 }
+                LayoutRequest::Slide { id, yaw_rad } => {
+                    if sh.state.slide_slot(id, yaw_rad).is_some() {
+                        sh.broadcast(None);
+                    }
+                }
+                LayoutRequest::Settle { id } => {
+                    if sh.state.settle_slot_by_yaw(id) {
+                        sh.broadcast(None);
+                    }
+                }
             }
         }
         Ok(())
@@ -353,6 +367,12 @@ impl LayoutRequestSender {
     }
     pub fn shift(&self, id: SlotId, delta: i32) -> Result<(), LayoutSessionClosed> {
         self.send(LayoutRequest::Shift { id, delta })
+    }
+    pub fn slide(&self, id: SlotId, yaw_rad: f32) -> Result<(), LayoutSessionClosed> {
+        self.send(LayoutRequest::Slide { id, yaw_rad })
+    }
+    pub fn settle(&self, id: SlotId) -> Result<(), LayoutSessionClosed> {
+        self.send(LayoutRequest::Settle { id })
     }
 }
 

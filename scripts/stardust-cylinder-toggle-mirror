@@ -1,17 +1,110 @@
 #!/usr/bin/env bash
-# Toggle a host-mirror label on the cylinder compositor (smallest "panel in/out of host").
-# Per-window host capture is NOT supported (ScreenCast is whole-output) — see docs/host-window-keybind.md.
+# Clean in/out state machine for a host-mirror label on the cylinder.
+#
+#   in  = exactly one host-mirror --label <L> running on the cylinder sock
+#   out = that process gone (ScreenCast released; host output healthy)
+#
+# Usage:
+#   stardust-cylinder-toggle-mirror <eDP-1|Meta-0>           # toggle
+#   stardust-cylinder-toggle-mirror <label> --in|--out|--status
+#
+# Never `exec`s the mirror in the foreground (Ctrl-C must not kill capture).
+# Stop waits for the process to exit before returning. Crash of the mirror
+# leaves state=out; relaunch with --in or dual-mirror --only.
 set -euo pipefail
-LABEL="${1:?usage: $0 <eDP-1|Meta-0>}"
+LABEL="${1:?usage: $0 <eDP-1|Meta-0> [--in|--out|--status|toggle]}"
+ACTION="${2:-toggle}"
 RUN="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-# Kill existing mirror with this label
-pkill -f "host-mirror[^ ]* --label ${LABEL}" 2>/dev/null || true
-pkill -f "host-mirror-dmabuf --label ${LABEL}" 2>/dev/null || true
-sleep 0.2
-# If it was running, we just removed it (out). If user passes --on, always launch.
-if [[ "${2:-}" == "--off" ]]; then
-  echo "stopped host-mirror --label $LABEL"
-  exit 0
-fi
-# Launch onto cylinder
-exec "$(dirname "$0")/stardust-cylinder-launch" host-mirror --label "$LABEL"
+STATE_DIR="$RUN/stardust-cylinder/mirror-state"
+mkdir -p "$STATE_DIR"
+STATE_FILE="$STATE_DIR/${LABEL}.state"
+pat="host-mirror[^ ]* --label ${LABEL}\$"
+
+running_pids() { pgrep -f "$pat" || true; }
+
+wait_gone() {
+  local pids="$1" t="${2:-5}" i
+  [[ -n "$pids" ]] || return 0
+  for i in $(seq 1 $((t * 10))); do
+    kill -0 $pids 2>/dev/null || return 0
+    sleep 0.1
+  done
+  kill -9 $pids 2>/dev/null || true
+  for i in $(seq 1 20); do
+    kill -0 $pids 2>/dev/null || return 0
+    sleep 0.1
+  done
+}
+
+do_out() {
+  local pids
+  pids=$(running_pids | tr '\n' ' ')
+  if [[ -z "$pids" ]]; then
+    echo "out: $LABEL already stopped"
+    echo out >"$STATE_FILE"
+    return 0
+  fi
+  echo "out: stopping $LABEL pids=$pids"
+  kill $pids 2>/dev/null || true
+  wait_gone "$pids" 5
+  # Confirm no leftover
+  pids=$(running_pids | tr '\n' ' ')
+  if [[ -n "$pids" ]]; then
+    echo "out: WARN still alive $pids; SIGKILL" >&2
+    kill -9 $pids 2>/dev/null || true
+    wait_gone "$pids" 2
+  fi
+  echo out >"$STATE_FILE"
+  echo "out: $LABEL stopped (ScreenCast released)"
+}
+
+do_in() {
+  local pids
+  pids=$(running_pids | tr '\n' ' ')
+  if [[ -n "$pids" ]]; then
+    echo "in: $LABEL already running pids=$pids"
+    echo in >"$STATE_FILE"
+    return 0
+  fi
+  echo "in: launching $LABEL onto cylinder (background)"
+  # Background via dual-mirror; do not exec into this shell.
+  HOST_MIRROR_REPLACE=0 \
+    CYLINDER_LAYOUT_SOCK="${CYLINDER_LAYOUT_SOCK:-$RUN/stardust-cylinder/layout.sock}" \
+    "$HOME/.local/bin/stardust-cylinder-launch" host-mirror --label "$LABEL" \
+    >/dev/null 2>&1 &
+  local launcher=$!
+  # Wait until mirror process appears (portal token path is usually instant)
+  for _ in $(seq 1 60); do
+    pids=$(running_pids | tr '\n' ' ')
+    if [[ -n "$pids" ]]; then
+      echo in >"$STATE_FILE"
+      echo "in: $LABEL up pids=$pids"
+      return 0
+    fi
+    kill -0 "$launcher" 2>/dev/null || break
+    sleep 0.25
+  done
+  echo "in: FAIL $LABEL did not start; see $RUN/host-mirror-${LABEL}.log" >&2
+  echo out >"$STATE_FILE"
+  return 1
+}
+
+do_status() {
+  local pids st
+  pids=$(running_pids | tr '\n' ' ')
+  if [[ -n "$pids" ]]; then st=in; else st=out; fi
+  echo "$LABEL state=$st pids=${pids:-none} file=$(cat "$STATE_FILE" 2>/dev/null || echo unset)"
+}
+
+case "$ACTION" in
+  --status|status) do_status ;;
+  --out|out) do_out ;;
+  --in|in) do_in ;;
+  toggle|"")
+    if [[ -n "$(running_pids)" ]]; then do_out; else do_in; fi
+    ;;
+  *)
+    echo "unknown action: $ACTION (use --in|--out|--status|toggle)" >&2
+    exit 2
+    ;;
+esac

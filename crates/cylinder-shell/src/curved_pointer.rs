@@ -4,6 +4,7 @@
 
 use crate::field_shape::field_shape_for_slice;
 use crate::hit_test::CylinderSliceHitTest;
+use crate::palm_wm::{self, PalmShape};
 use crate::pointer_uv::{mesh_local_point_hit, mesh_local_ray_hit, OVERLAY_INSET_M, SliceHit};
 use glam::Vec3;
 use stardust_xr_asteroids::{Context, CreateInnerInfo, CustomElement, FnWrapper, ValidState};
@@ -49,8 +50,12 @@ pub struct CurvedPointerPlane<State: ValidState> {
     on_motion: FnWrapper<dyn Fn(&mut State, (f32, f32)) + Send + Sync>,
     on_button: FnWrapper<dyn Fn(&mut State, u32, bool) + Send + Sync>,
     on_scroll: FnWrapper<dyn Fn(&mut State, [f32; 2]) + Send + Sync>,
-    /// Pinch-drag horizontally past a threshold → signed delta in metres of arc (+ = +u).
-    on_pinch_drag: FnWrapper<dyn Fn(&mut State, f32) + Send + Sync>,
+    /// Open-palm highlight (ray hits panel while hand is open, not pinching).
+    on_palm_highlight: FnWrapper<dyn Fn(&mut State, bool) + Send + Sync>,
+    /// Fist while highlighted: slide panel centre yaw (radians, group-relative).
+    on_palm_slide: FnWrapper<dyn Fn(&mut State, f32) + Send + Sync>,
+    /// Open hand after a grab: settle into nearest slot.
+    on_palm_settle: FnWrapper<dyn Fn(&mut State) + Send + Sync>,
 }
 
 impl<State: ValidState> CurvedPointerPlane<State> {
@@ -60,7 +65,9 @@ impl<State: ValidState> CurvedPointerPlane<State> {
             on_motion: FnWrapper(Box::new(|_, _| {})),
             on_button: FnWrapper(Box::new(|_, _, _| {})),
             on_scroll: FnWrapper(Box::new(|_, _| {})),
-            on_pinch_drag: FnWrapper(Box::new(|_, _| {})),
+            on_palm_highlight: FnWrapper(Box::new(|_, _| {})),
+            on_palm_slide: FnWrapper(Box::new(|_, _| {})),
+            on_palm_settle: FnWrapper(Box::new(|_| {})),
         }
     }
     /// Called with normalized UV (u right, v down) on the curved slice.
@@ -76,8 +83,16 @@ impl<State: ValidState> CurvedPointerPlane<State> {
         self.on_scroll = FnWrapper(Box::new(f));
         self
     }
-    pub fn on_pinch_drag(mut self, f: impl Fn(&mut State, f32) + Send + Sync + 'static) -> Self {
-        self.on_pinch_drag = FnWrapper(Box::new(f));
+    pub fn on_palm_highlight(mut self, f: impl Fn(&mut State, bool) + Send + Sync + 'static) -> Self {
+        self.on_palm_highlight = FnWrapper(Box::new(f));
+        self
+    }
+    pub fn on_palm_slide(mut self, f: impl Fn(&mut State, f32) + Send + Sync + 'static) -> Self {
+        self.on_palm_slide = FnWrapper(Box::new(f));
+        self
+    }
+    pub fn on_palm_settle(mut self, f: impl Fn(&mut State) + Send + Sync + 'static) -> Self {
+        self.on_palm_settle = FnWrapper(Box::new(f));
         self
     }
 }
@@ -96,10 +111,13 @@ pub struct CurvedPointerInner {
     right: SingleAction,
     /// Flatland-style hover ray/line + hit cursor (updated every input frame).
     lines: Lines,
-    /// UV.u at pinch-drag start; None when not dragging for swap.
-    pinch_drag_u0: Option<f32>,
-    /// True once a swap drag fired this pinch (suppress further until release).
-    pinch_drag_fired: bool,
+    palm_shape: PalmShape,
+    /// True while fist-grabbing for panel slide.
+    palm_grabbing: bool,
+    /// UV.u + panel yaw at grab start.
+    palm_grab_u0: Option<f32>,
+    palm_grab_yaw0: Option<f32>,
+    palm_highlight: bool,
 }
 
 impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
@@ -125,8 +143,11 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
             middle: SingleAction::default(),
             right: SingleAction::default(),
             lines,
-            pinch_drag_u0: None,
-            pinch_drag_fired: false,
+            palm_shape: PalmShape::Open,
+            palm_grabbing: false,
+            palm_grab_u0: None,
+            palm_grab_yaw0: None,
+            palm_highlight: false,
         })
     }
 
@@ -200,26 +221,93 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
                 (self.on_button.0)(state, btn, false);
             }
         }
-        // Pinch-drag → panel shift: move > ~12 cm of arc while left-pinching.
-        const DRAG_M: f32 = 0.12;
-        if inner.left.actor_started() {
-            if let Some((_, hit)) = best {
-                inner.pinch_drag_u0 = Some(hit.uv.0);
-                inner.pinch_drag_fired = false;
+        // --- Open-palm window management (pinch stays click via left action above) ---
+        {
+            let mut palm_hit: Option<SliceHit> = None;
+            let mut shape_now = inner.palm_shape;
+            let mut pinching = false;
+            // Prefer a Hand input for palm WM.
+            for snap in input.values() {
+                let InputDataType::Hand { data } = snap.input() else { continue };
+                let palm = Vec3::from(data.palm.pose.position);
+                let tips = [
+                    Vec3::from(data.index.tip.pose.position).to_array(),
+                    Vec3::from(data.middle.tip.pose.position).to_array(),
+                    Vec3::from(data.ring.tip.pose.position).to_array(),
+                    Vec3::from(data.little.tip.pose.position).to_array(),
+                ];
+                let openness = palm_wm::hand_openness(palm.to_array(), tips);
+                let thumb_i = palm.distance(Vec3::from(data.thumb.tip.pose.position));
+                let idx_i = palm.distance(Vec3::from(data.index.tip.pose.position));
+                // pinch gap thumb–index
+                let pinch_gap = Vec3::from(data.thumb.tip.pose.position)
+                    .distance(Vec3::from(data.index.tip.pose.position));
+                pinching = pinch_gap < palm_wm::PINCH_M;
+                shape_now = palm_wm::classify_palm(openness, inner.palm_shape);
+                // Ray from palm along +Y (out of palm in OpenXR convention).
+                let o = data.palm.pose.orientation;
+                let quat = glam::Quat::from_xyzw(o.v.x, o.v.y, o.v.z, o.s);
+                let dir = quat * Vec3::Y;
+                if let Some(hit) = mesh_local_ray_hit(&h, palm.to_array(), dir.to_array()) {
+                    palm_hit = Some(hit);
+                } else if let Some(hit) = mesh_local_point_hit(&h, palm.to_array())
+                    .filter(|hit| HAND_HOVER.contains(&hit.distance))
+                {
+                    palm_hit = Some(hit);
+                }
+                let _ = (thumb_i, idx_i); // hush
+                break;
             }
-        }
-        if inner.left.actor_stopped() {
-            inner.pinch_drag_u0 = None;
-            inner.pinch_drag_fired = false;
-        }
-        if inner.left.actor_acting() && !inner.pinch_drag_fired {
-            if let (Some(u0), Some((_, hit))) = (inner.pinch_drag_u0, best) {
-                let du = hit.uv.0 - u0;
-                let arc = du * h.width_m;
-                if arc.abs() >= DRAG_M {
-                    (self.on_pinch_drag.0)(state, arc);
-                    inner.pinch_drag_fired = true;
-                    inner.pinch_drag_u0 = Some(hit.uv.0);
+            inner.palm_shape = shape_now;
+
+            if pinching {
+                // Abort any in-progress palm grab; pinch owns the hand.
+                if inner.palm_grabbing {
+                    inner.palm_grabbing = false;
+                    inner.palm_grab_u0 = None;
+                    inner.palm_grab_yaw0 = None;
+                    (self.on_palm_settle.0)(state);
+                }
+                if inner.palm_highlight {
+                    inner.palm_highlight = false;
+                    (self.on_palm_highlight.0)(state, false);
+                }
+            } else {
+                let want_hl = palm_hit.is_some() && shape_now == PalmShape::Open && !inner.palm_grabbing;
+                if want_hl != inner.palm_highlight {
+                    inner.palm_highlight = want_hl;
+                    (self.on_palm_highlight.0)(state, want_hl);
+                }
+                match (inner.palm_grabbing, shape_now, palm_hit) {
+                    (false, PalmShape::Fist, Some(hit)) if inner.palm_highlight => {
+                        inner.palm_grabbing = true;
+                        inner.palm_grab_u0 = Some(hit.uv.0);
+                        inner.palm_grab_yaw0 = None;
+                        (self.on_palm_highlight.0)(state, true);
+                        inner.palm_highlight = true;
+                        // Seed slide at current u so xr captures yaw0.
+                        (self.on_palm_slide.0)(state, 0.0);
+                    }
+                    (true, PalmShape::Fist, Some(hit)) => {
+                        let u0 = inner.palm_grab_u0.unwrap_or(0.5);
+                        let u = hit.uv.0;
+                        // Encode as fake yaw using helper with yaw0=0; xr adds slot yaw.
+                        let dyaw = palm_wm::slide_yaw_from_uv_delta(0.0, u0, u, h.width_m, h.radius_m);
+                        (self.on_palm_slide.0)(state, dyaw);
+                    }
+                    (true, PalmShape::Open, _) => {
+                        inner.palm_grabbing = false;
+                        inner.palm_grab_u0 = None;
+                        inner.palm_grab_yaw0 = None;
+                        (self.on_palm_settle.0)(state);
+                        let hl = palm_hit.is_some();
+                        inner.palm_highlight = hl;
+                        (self.on_palm_highlight.0)(state, hl);
+                    }
+                    (true, _, None) => {
+                        // Lost ray while fist — keep grab, don't settle yet.
+                    }
+                    _ => {}
                 }
             }
         }

@@ -49,8 +49,14 @@ elif cmd == "shift":
     if nid is None:
         print("shift needs slot id", file=sys.stderr); sys.exit(2)
     send({"Shift": {"id": int(nid), "delta": int(b or "1")}})
+elif cmd == "slide":
+    sid = int(sys.argv[3]); yaw = float(sys.argv[4])
+    send({"Slide": {"id": sid, "yaw_rad": yaw}})
+elif cmd == "settle":
+    sid = int(sys.argv[3])
+    send({"Settle": {"id": sid}})
 else:
-    print(f"unknown cmd {cmd}; use grab|radius|reanchor|swap|reorder|shift", file=sys.stderr)
+    print(f"unknown cmd {cmd}; use grab|radius|reanchor|swap|reorder|shift|slide|settle", file=sys.stderr)
     sys.exit(2)
 print(f"sent {cmd} -> {sock_path}")
 s.close()

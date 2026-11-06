@@ -4,6 +4,8 @@ Do **not** mark these verified from headless-vr or CI. Everything else in the fe
 
 ## Sub-features
 
+- `open-palm-wm-feel` — open-palm ray highlight / fist grab feel under WiVRn (logic covered headless via Slide/Settle IPC + palm_wm unit tests).
+
 - `quest-lens-feel` — optical distortion / IPD comfort (not a PNG property).
 - `wivrn-latency` — bead grab and pointer lag under WiVRn to Quest.
 - `true-hand-pinch` — controller/hand tracking pinch precision vs flatscreen RMB grab.

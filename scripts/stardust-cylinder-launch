@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # Launch an app (or host-mirror) onto the live cylinder Wayland display.
 # Used by hexagon .desktop entries and keybinds. Never starts/stops the session.
+#
+# host-mirror: if a mirror with that --label is already running, do NOTHING
+# (focus/replace-noop). Never spawn a duplicate. Metrics come from
+# stardust_cylinder_shell via SDXR_WL_APP_ID (eDP 2560@2300, Meta 3440@2070).
 set -euo pipefail
 RUN="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 LAYOUT_SOCK="${CYLINDER_LAYOUT_SOCK:-$RUN/stardust-cylinder/layout.sock}"
 
 find_cyl_sock() {
   local pid cand cmd
-  # Prefer newest cylinder -p wayland-service
   for pid in $(pgrep -f 'stardust-xr-wayland-service ' | sort -nr); do
     cmd=$(tr '\0' ' ' </proc/$pid/cmdline 2>/dev/null || true)
     case "$cmd" in
@@ -30,15 +33,31 @@ if [[ -z "${STARDUST_WAYLAND_DISPLAY:-}" ]]; then
 fi
 export WAYLAND_DISPLAY="$STARDUST_WAYLAND_DISPLAY"
 export CYLINDER_LAYOUT_SOCK="$LAYOUT_SOCK"
-# host-mirror binary may be host-mirror-dmabuf
+
 if [[ "${1:-}" == "host-mirror" ]]; then
   shift
-  BIN="${HOST_MIRROR_BIN:-}"
-  if [[ -z "$BIN" ]]; then
-    if command -v host-mirror-dmabuf >/dev/null; then BIN=host-mirror-dmabuf
-    else BIN=host-mirror; fi
+  # Parse --label
+  LABEL=""
+  args=("$@")
+  for ((i=0; i<${#args[@]}; i++)); do
+    if [[ "${args[$i]}" == "--label" && $((i+1)) -lt ${#args[@]} ]]; then
+      LABEL="${args[$((i+1))]}"
+    fi
+  done
+  [[ -n "$LABEL" ]] || { echo "stardust-cylinder-launch host-mirror needs --label" >&2; exit 2; }
+
+  pat="host-mirror[^ ]* --label ${LABEL}\$"
+  if pgrep -f "$pat" >/dev/null; then
+    echo "host-mirror --label $LABEL already on cylinder (pid $(pgrep -f "$pat" | tr '\n' ' ')); not duplicating"
+    exit 0
   fi
-  export HOST_MIRROR_REPLACE="${HOST_MIRROR_REPLACE:-1}"
-  exec "$BIN" "$@"
+
+  # Launch via dual-mirror so flock + portal token path + setsid background apply.
+  # REPLACE only when explicitly requested (not the hexagon default).
+  export HOST_MIRROR_REPLACE="${HOST_MIRROR_REPLACE:-0}"
+  export STARDUST_WAYLAND_DISPLAY
+  export CYLINDER_LAYOUT_SOCK
+  exec "${HOME}/.local/bin/stardust-dual-mirror-flat" --only "$LABEL"
 fi
+
 exec "$@"
