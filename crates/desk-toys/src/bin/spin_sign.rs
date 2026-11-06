@@ -1,6 +1,7 @@
 //! A slappable spinning sign on a post. Slap it with an open hand (or click/scroll on it
 //! with a pointer) and it spins on its post, slowing down and settling on a face.
 
+use palm_reach::PalmGrabbable;
 use desk_toys::{
     env_pos, identity_rot, inertia::{self, Inertia}, init_tracing, pose_predict_dt,
     touch::{Touch, TouchFrame},
@@ -12,6 +13,7 @@ use stardust_xr_asteroids::{
     ClientState, Context, CustomElement as _, Element, Entity, Migrate, Reify, Tasker,
     Transformable as _,
     components::{Grabbable, PointerMode},
+    // palm reach via palm_reach::PalmGrabbable
     elements::{Model, Spatial, Text},
 };
 use stardust_xr_fusion::{
@@ -213,12 +215,19 @@ impl Reify for State {
             .pos(self.pos)
             .rot(self.rot)
             .component((
-                Grabbable::new(|state: &mut State, pose| {
-                    state.pos = pose.position;
-                    state.rot = upright(pose.orientation);
-                })
-                .max_distance(0.02)
-                .pointer_mode(PointerMode::Align),
+                (
+                    Grabbable::new(|state: &mut State, pose| {
+                        state.pos = pose.position;
+                        state.rot = upright(pose.orientation);
+                    })
+                    .max_distance(0.02)
+                    .pointer_mode(PointerMode::Align),
+                    PalmGrabbable::new(|state: &mut State, pose| {
+                        state.pos = pose.position;
+                        state.rot = upright(pose.orientation);
+                    })
+                    .hit_radius(0.14),
+                ),
                 Touch::new(on_frame),
             ))
             .build()

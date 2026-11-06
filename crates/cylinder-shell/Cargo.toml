@@ -16,6 +16,7 @@ name = "cylinder-layout"
 path = "src/bin/cylinder-layout.rs"
 
 [dependencies]
+palm-reach = { path = "../palm-reach" }
 directories = "5"
 glam = { version = "0.33.7", features = ["mint"] }
 tokio = { version = "1.22.0", default-features = false, features = ["rt", "macros", "net", "sync", "time", "io-util", "signal"] }

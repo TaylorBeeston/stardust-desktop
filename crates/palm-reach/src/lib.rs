@@ -961,3 +961,8 @@ mod sim_hands {
         assert_eq!(arm.aim().unwrap().1, locked);
     }
 }
+
+#[cfg(feature = "asteroids")]
+mod asteroids_grab;
+#[cfg(feature = "asteroids")]
+pub use asteroids_grab::PalmGrabbable;

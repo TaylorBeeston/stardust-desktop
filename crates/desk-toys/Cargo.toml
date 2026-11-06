@@ -16,6 +16,7 @@ name = "wrist-menu"
 path = "src/bin/wrist_menu.rs"
 
 [dependencies]
+palm-reach = { path = "../palm-reach", features = ["asteroids"] }
 directories = "5"
 glam = { version = "0.33.7", features = ["mint"] }
 tokio = { version = "1.22.0", default-features = false, features = ["rt", "macros"] }

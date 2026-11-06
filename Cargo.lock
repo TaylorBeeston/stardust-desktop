@@ -744,6 +744,7 @@ dependencies = [
  "glam",
  "gluon-ipc",
  "libc",
+ "palm-reach",
  "serde",
  "serde_json",
  "stardust-xr-asteroids",
@@ -867,6 +868,7 @@ version = "0.1.0"
 dependencies = [
  "directories 5.0.1",
  "glam",
+ "palm-reach",
  "serde",
  "stardust-xr-asteroids",
  "stardust-xr-fusion",
@@ -2467,6 +2469,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "36820e9051aca1014ddc75770aab4d68bc1e9e632f0f5627c4086bc216fb583b"
 dependencies = [
  "ttf-parser",
+]
+
+[[package]]
+name = "palm-reach"
+version = "0.1.0"
+dependencies = [
+ "derive-where",
+ "glam",
+ "serde_json",
+ "stardust-xr-asteroids",
+ "stardust-xr-fusion",
+ "stardust-xr-molecules",
 ]
 
 [[package]]

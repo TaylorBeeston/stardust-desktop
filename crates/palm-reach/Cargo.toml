@@ -1,0 +1,23 @@
+[package]
+name = "palm-reach"
+version = "0.1.0"
+edition = "2024"
+description = "Open-palm reach arming + ray helpers; optional asteroids PalmGrabbable"
+license = "MIT"
+repository = "https://github.com/TaylorBeeston/stardust-desktop"
+publish = false
+
+[features]
+default = []
+asteroids = ["dep:stardust-xr-fusion", "dep:stardust-xr-molecules", "dep:stardust-xr-asteroids", "dep:derive-where"]
+
+[dependencies]
+glam = { version = "0.33.7", features = ["mint"] }
+
+stardust-xr-fusion = { version = "0.53.0-rc.1", optional = true }
+stardust-xr-molecules = { version = "0.53.0-rc.1", optional = true }
+stardust-xr-asteroids = { version = "0.53.0-rc.1", optional = true }
+derive-where = { version = "1", optional = true }
+
+[dev-dependencies]
+serde_json = "1"
