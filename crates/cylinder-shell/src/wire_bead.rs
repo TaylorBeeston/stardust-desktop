@@ -212,7 +212,7 @@ impl<State: ValidState> CustomElement<State> for WireBead<State> {
         let mut ray_end: Option<Vec3> = None;
         let mut palm_pt: Option<Vec3> = None;
 
-        for snap in inner.input.input().values() {
+        for snap in inner.input.input().values().filter(|_| crate::PALM_REACH_ENABLED) {
             let InputDataType::Hand { data } = snap.input() else { continue };
             let palm = Vec3::from(data.palm.pose.position);
             palm_pt = Some(palm);

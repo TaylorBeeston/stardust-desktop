@@ -9,6 +9,11 @@ pub mod hit_test;
 pub mod layout_ipc;
 pub mod curved_pointer;
 pub use palm_reach as palm_wm;
+
+/// Open-palm reach (ray, fist grab, slide-to-reorder) is switched off: Taylor pulled it
+/// 2026-11-06 until a better gesture exists. With this false no hand is fed to
+/// `ReachArming`, so it never arms, never suppresses pinch, and never slides panels.
+pub const PALM_REACH_ENABLED: bool = false;
 pub mod mesh;
 pub mod mods;
 pub mod outline;

@@ -2,7 +2,6 @@
 //! or just bat the balls with your hand. Elastic sequential-impulse collisions between
 //! pendulums, so 1, 2 or 3 balls in means 1, 2 or 3 balls out.
 
-use palm_reach::PalmGrabbable;
 use desk_toys::{
     env_pos, identity_rot,
     inertia::Inertia,
@@ -392,19 +391,14 @@ impl Reify for State {
         Entity::new(base)
             .pos(self.pos)
             .rot(self.rot)
-            .component((
+            .component(
                 Grabbable::new(|state: &mut State, pose| {
                     state.pos = pose.position;
                     state.rot = upright(pose.orientation);
                 })
                 .max_distance(0.015)
                 .pointer_mode(PointerMode::Align),
-                PalmGrabbable::new(|state: &mut State, pose| {
-                    state.pos = pose.position;
-                    state.rot = upright(pose.orientation);
-                })
-                .hit_radius(0.18),
-            ))
+            )
             .build()
             .child(
                 Entity::new(play)

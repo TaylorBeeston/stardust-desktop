@@ -111,9 +111,6 @@ pub struct CylinderShell {
     /// Group gap (metres of arc) — for bead placement parity with packing.
     #[serde(skip)]
     group_gap_m: f32,
-    /// Panel yaw at open-palm grab start (group-relative).
-    #[serde(skip)]
-    palm_grab_yaw0: Option<f32>,
 }
 
 /// Apply a relative mouse delta to the cursor, clamped to the surface. Pure — unit-tested.
@@ -154,7 +151,6 @@ impl Default for CylinderShell {
             cursor: None,
             group_yaw_rad: 0.0,
             group_gap_m: 0.055,
-            palm_grab_yaw0: None,
         }
     }
 }
@@ -377,22 +373,6 @@ impl CylinderShell {
                 })
                 .on_button(|state: &mut Self, button, pressed| {
                     state.forward_pointer_button("xr", button, pressed, None);
-                })
-                .on_palm_highlight(|state: &mut Self, on| {
-                    if on { state.last_input_at = Some(std::time::Instant::now()); }
-                    tracing::debug!(on, "palm highlight");
-                })
-                .on_palm_slide(|state: &mut Self, dyaw| {
-                    let Some(slot) = &state.worker.slot else { return };
-                    let base = *state.palm_grab_yaw0.get_or_insert(slot.yaw_rad);
-                    let yaw = base + dyaw;
-                    tracing::debug!(yaw, dyaw, "palm slide");
-                    state.send_slide(yaw);
-                })
-                .on_palm_settle(|state: &mut Self| {
-                    state.palm_grab_yaw0 = None;
-                    tracing::info!("palm settle");
-                    state.send_settle();
                 })
                 .on_scroll(|state: &mut Self, delta| {
                     let Some(shell) = &state.shell else { return };

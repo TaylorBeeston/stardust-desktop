@@ -868,7 +868,6 @@ version = "0.1.0"
 dependencies = [
  "directories 5.0.1",
  "glam",
- "palm-reach",
  "serde",
  "stardust-xr-asteroids",
  "stardust-xr-fusion",

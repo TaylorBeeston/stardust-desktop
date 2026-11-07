@@ -202,7 +202,7 @@ impl<State: ValidState> CustomElement<State> for CurvedPointerPlane<State> {
             ray_hit: bool,
         }
         let mut hands: Vec<HandCand> = Vec::new();
-        for snap in input.values() {
+        for snap in input.values().filter(|_| crate::PALM_REACH_ENABLED) {
             let InputDataType::Hand { data } = snap.input() else { continue };
             let palm = Vec3::from(data.palm.pose.position);
             let tips = [

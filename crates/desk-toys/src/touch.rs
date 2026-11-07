@@ -3,7 +3,6 @@
 //! rays, all in the entity's own local space.
 
 use glam::{Quat, Vec3};
-use palm_reach::PalmGrabbable;
 use stardust_xr_asteroids::{
     CloneFnWrapper, Component, ComponentCreateInfo, Context, Inners, ValidState,
     components::Grabbable,
@@ -106,10 +105,7 @@ impl<State: ValidState> Component<State> for Touch<State> {
     fn frame(&self, context: &Context, info: &FrameInfo, state: &mut State, inners: &mut Inners<'_, State, Self>) {
         let grabbed = inners
             .get::<Grabbable<State>>()
-            .is_some_and(|g| g.grabbing())
-            || inners
-                .get::<PalmGrabbable<State>>()
-                .is_some_and(|g| g.grabbing());
+            .is_some_and(|g| g.grabbing());
         let inner = inners.self_inner();
         inner.input.handle_events();
         let dt = info.delta.clamp(1.0 / 500.0, 0.1);
